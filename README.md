@@ -11,11 +11,14 @@ Top-down shooter prototype in Python with a shared simulation core for single-pl
 - Visual HUD with health, armor, ammo, selected weapon, minimap and inventory overlay.
 - Lootable weapons, ammo, medkits and armor.
 - Zombie bot archetypes: fast runners, balanced walkers and armored brutes.
+- Leaper zombies sprint faster during chase, weave side to side, spit poison and leave temporary toxic pools when they miss.
 - AI perception with field-of-view cones, blind zones, hearing sensitivity, noise investigation, chase, search and patrol modes.
 - Large 9600x6600 map with buildings, walls, doors, interiors, props and stairs.
 - Multi-floor interiors with basements, work benches, repair tables and floor-specific visibility.
+- Basement tunnel network connecting buildings. Tunnels are dark; flashlight modules reveal loot and navigation.
 - Grid backpack with body armor slots, drag/drop, item dropping, consumables, resources, crafting and armor repair.
 - Quick slots can hold weapons or grenades; weapons can be reordered by dragging them between slots.
+- Weapon customization supports utility and magazine module slots. Laser sights tighten aim, flashlights light tunnels, and extended magazines increase capacity.
 - Weapons and equipped armor have durability. Drag a repair kit onto a damaged item to repair it.
 - Online scoreboard with per-player kills by zombie type and online respawn.
 - Main-menu visual settings with bot density and difficulty presets for new single-player runs.
@@ -79,7 +82,7 @@ Server difficulty can be `easy`, `medium`, `hard` or `insane`. In online mode th
 - `Ctrl`: sneak. Sneaking is slower and silent.
 - `R`: reload.
 - `E`: pick up loot nearby.
-- `F`: open/close nearby doors or use stairs inside buildings.
+- `F`: open/close nearby doors or use stairs inside buildings; otherwise toggles the active weapon utility module.
 - `G`: throw a grenade. It detonates after 2 seconds.
 - `1`-`9`, `0`: select weapon or quick-slot grenade.
 - `B`: backpack.
@@ -109,6 +112,8 @@ Loot now goes into the backpack when possible. Right-click food or medical items
 Work benches are in basements and open the crafting menu with `C`. Repair tables are usually on the first floor; repair equipped armor from the backpack screen if you have a repair kit.
 
 Light armor can be found in the world. Medium and heavy armor pieces are crafted for each body slot. Drag a repair kit directly onto damaged weapons or equipment to consume the kit and restore durability.
+
+Open the backpack and press `Customize Weapon` to install modules. Utility slots accept a laser sight or flashlight; magazine slots accept an extended magazine. While weapon customization is open, close it before switching to crafting or closing the backpack.
 
 ## Localization
 

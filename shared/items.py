@@ -43,6 +43,9 @@ ITEMS: dict[str, ItemSpec] = {
     "ammo_pack": ItemSpec("ammo_pack", "Ammo Pack", "ammo", stack_size=12, color=(255, 210, 112)),
     "grenade": ItemSpec("grenade", "Grenade", "grenade", stack_size=4, color=(96, 180, 108)),
     "repair_kit": ItemSpec("repair_kit", "Repair Kit", "tool", stack_size=4, color=(255, 146, 100)),
+    "laser_module": ItemSpec("laser_module", "Laser Sight", "weapon_module", stack_size=1, color=(255, 84, 98)),
+    "flashlight_module": ItemSpec("flashlight_module", "Flashlight", "weapon_module", stack_size=1, color=(255, 238, 148)),
+    "extended_mag": ItemSpec("extended_mag", "Extended Magazine", "weapon_module", stack_size=1, color=(116, 204, 255)),
     **_armor_items(),
 }
 
@@ -66,6 +69,9 @@ RECIPES: dict[str, Recipe] = {
     "repair_kit": Recipe("repair_kit", "Repair Kit", {"scrap": 4, "duct_tape": 2}, ("repair_kit", 1)),
     "ammo_pack": Recipe("ammo_pack", "Ammo Pack", {"scrap": 2, "gunpowder": 3}, ("ammo_pack", 2)),
     "grenade": Recipe("grenade", "Grenade", {"scrap": 3, "gunpowder": 5, "duct_tape": 1}, ("grenade", 1)),
+    "laser_module": Recipe("laser_module", "Laser Sight", {"circuit": 1, "scrap": 2, "duct_tape": 1}, ("laser_module", 1)),
+    "flashlight_module": Recipe("flashlight_module", "Flashlight", {"circuit": 1, "scrap": 2, "cloth": 1}, ("flashlight_module", 1)),
+    "extended_mag": Recipe("extended_mag", "Extended Magazine", {"scrap": 4, "duct_tape": 1}, ("extended_mag", 1)),
 }
 
 for slot, title in SLOT_TITLES.items():
@@ -95,6 +101,9 @@ HOUSE_LOOT = [
     ("circuit", 1, 2),
     ("repair_kit", 1, 1),
     ("grenade", 1, 1),
+    ("laser_module", 1, 1),
+    ("flashlight_module", 1, 1),
+    ("extended_mag", 1, 1),
     ("light_head", 1, 1),
     ("light_torso", 1, 1),
     ("light_arms", 1, 1),
@@ -109,6 +118,8 @@ WORLD_LOOT = [
     ("duct_tape", 1, 2),
     ("ammo_pack", 1, 4),
     ("grenade", 1, 1),
+    ("flashlight_module", 1, 1),
+    ("extended_mag", 1, 1),
     ("light_head", 1, 1),
     ("light_torso", 1, 1),
     ("light_arms", 1, 1),

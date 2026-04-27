@@ -27,6 +27,7 @@ from shared.constants import (
 from shared.difficulty import DifficultyConfig, load_difficulty
 from shared.items import ITEMS, LEGACY_LOOT_TO_ITEM, RECIPES, WORLD_LOOT, HOUSE_LOOT
 from shared.level import all_closed_walls, make_buildings, nearest_door, nearest_prop, nearest_stairs, point_building
+from shared.weapon_modules import WEAPON_MODULES
 from shared.models import (
     BuildingState,
     GrenadeState,
@@ -34,6 +35,8 @@ from shared.models import (
     InventoryItem,
     LootState,
     PlayerState,
+    PoisonPoolState,
+    PoisonProjectileState,
     ProjectileState,
     RectState,
     Vec2,
@@ -60,6 +63,8 @@ class GameWorld:
         self.zombies: dict[str, ZombieState] = {}
         self.projectiles: dict[str, ProjectileState] = {}
         self.grenades: dict[str, GrenadeState] = {}
+        self.poison_projectiles: dict[str, PoisonProjectileState] = {}
+        self.poison_pools: dict[str, PoisonPoolState] = {}
         self.loot: dict[str, LootState] = {}
         self.inputs: dict[str, InputCommand] = {}
         self._grenade_cooldowns: dict[str, float] = {}
@@ -129,6 +134,9 @@ class GameWorld:
         self._update_players(dt)
         self._update_projectiles(dt)
         self._update_grenades(dt)
+        self._update_poison_projectiles(dt)
+        self._update_poison_pools(dt)
+        self._update_poisoned_players(dt)
         self._update_zombies(dt)
         self._spawn_timer -= dt
         self._loot_timer -= dt
@@ -200,8 +208,11 @@ class GameWorld:
 
             if command.pickup:
                 self._pickup_nearby(player)
+            interacted = False
             if command.interact:
-                self._interact(player)
+                interacted = self._interact(player)
+            if command.toggle_utility and not interacted:
+                self._toggle_weapon_utility(player)
             if command.reload:
                 self._start_reload(player)
             if command.shooting:
@@ -229,12 +240,14 @@ class GameWorld:
                 or projectile.pos.y < 0
                 or projectile.pos.x > MAP_WIDTH
                 or projectile.pos.y > MAP_HEIGHT
-                or self._blocked_at(projectile.pos, projectile.radius)
+                or self._blocked_at(projectile.pos, projectile.radius, projectile.floor)
             ):
                 dead_projectiles.append(projectile.id)
                 continue
 
             for zombie in list(self.zombies.values()):
+                if zombie.floor != projectile.floor:
+                    continue
                 spec = ZOMBIES[zombie.kind]
                 if projectile.pos.distance_to(zombie.pos) <= spec.radius + projectile.radius:
                     self._damage_zombie(zombie, projectile.damage, projectile.owner_id)
@@ -260,11 +273,84 @@ class GameWorld:
             if grenade:
                 self._detonate_grenade(grenade)
 
+    def _update_poison_projectiles(self, dt: float) -> None:
+        expired: list[str] = []
+        for spit in self.poison_projectiles.values():
+            spit.life -= dt
+            old_pos = spit.pos.copy()
+            spit.pos.add(spit.velocity.scaled(dt))
+            hit_wall = self._blocked_at(spit.pos, spit.radius, spit.floor)
+            reached_target = old_pos.distance_to(spit.target) <= spit.pos.distance_to(spit.target) or spit.pos.distance_to(spit.target) <= 18
+            hit_player = None
+            for player in self.players.values():
+                if player.alive and player.floor == spit.floor and player.pos.distance_to(spit.pos) <= PLAYER_RADIUS + spit.radius:
+                    hit_player = player
+                    break
+            if hit_player:
+                self._apply_poison(hit_player, damage_per_tick=3)
+                expired.append(spit.id)
+            elif hit_wall or reached_target or spit.life <= 0.0:
+                self._spawn_poison_pool(spit.pos if not reached_target else spit.target, spit.floor)
+                expired.append(spit.id)
+        for spit_id in expired:
+            self.poison_projectiles.pop(spit_id, None)
+
+    def _update_poison_pools(self, dt: float) -> None:
+        expired: list[str] = []
+        for pool in self.poison_pools.values():
+            pool.timer -= dt
+            if pool.timer <= 0.0:
+                expired.append(pool.id)
+                continue
+            for player in self.players.values():
+                if player.alive and player.floor == pool.floor and player.pos.distance_to(pool.pos) <= pool.radius + PLAYER_RADIUS * 0.35:
+                    self._apply_poison(player, damage_per_tick=2)
+        for pool_id in expired:
+            self.poison_pools.pop(pool_id, None)
+
+    def _update_poisoned_players(self, dt: float) -> None:
+        for player in self.players.values():
+            if player.poison_left <= 0.0 or not player.alive:
+                player.poison_left = 0.0
+                player.poison_tick = 0.0
+                player.poison_damage = 0
+                continue
+            player.poison_left = max(0.0, player.poison_left - dt)
+            player.poison_tick -= dt
+            if player.poison_tick <= 0.0:
+                player.poison_tick = 1.0
+                self._apply_poison_damage(player, max(1, player.poison_damage))
+
+    def _spawn_poison_pool(self, pos: Vec2, floor: int) -> None:
+        pool_id = self._id("acid")
+        pool_pos = pos.copy()
+        pool_pos.clamp_to_map(MAP_WIDTH, MAP_HEIGHT)
+        self.poison_pools[pool_id] = PoisonPoolState(pool_id, pool_pos, floor=floor, timer=5.0)
+
+    def _apply_poison(self, player: PlayerState, damage_per_tick: int) -> None:
+        if player.poison_left <= 0.0:
+            player.poison_tick = 1.0
+        player.poison_left = max(player.poison_left, 5.0)
+        if player.poison_tick <= 0.0:
+            player.poison_tick = 1.0
+        player.poison_damage = max(player.poison_damage, damage_per_tick)
+
+    def _apply_poison_damage(self, player: PlayerState, damage: int) -> None:
+        player.healing_left = 0.0
+        player.healing_pool = 0.0
+        player.healing_rate = 0.0
+        player.health -= damage
+        if player.health <= 0:
+            player.health = 0
+            player.alive = False
+
     def _update_zombies(self, dt: float) -> None:
         living_players = [player for player in self.players.values() if player.alive]
         for zombie in list(self.zombies.values()):
             spec = ZOMBIES[zombie.kind]
             zombie.attack_cooldown = max(0.0, zombie.attack_cooldown - dt)
+            zombie.special_cooldown = max(0.0, zombie.special_cooldown - dt)
+            zombie.sidestep_timer = max(0.0, zombie.sidestep_timer - dt)
             visible_player = self._visible_player(zombie, living_players)
             if visible_player:
                 zombie.mode = "chase"
@@ -296,7 +382,11 @@ class GameWorld:
         target = self.players.get(zombie.target_player_id or "")
         if target and target.alive and self._can_see(zombie, target):
             zombie.last_known_pos = target.pos.copy()
-            self._zombie_move_toward(zombie, target.pos, dt, sprint=True)
+            if zombie.kind == "leaper":
+                self._try_poison_spit(zombie, target)
+                self._leaper_move_toward(zombie, target.pos, dt)
+            else:
+                self._zombie_move_toward(zombie, target.pos, dt, sprint=True)
             self._try_zombie_attack(zombie, target)
             return
         if target and target.inside_building:
@@ -376,11 +466,64 @@ class GameWorld:
             if self._unstick_zombie_from_building(zombie, spec.radius):
                 zombie.waypoint = self._random_patrol_pos()
                 return
-            door = nearest_door(self.buildings, zombie.pos, 120)
+            door = nearest_door(self.buildings, zombie.pos, 120, zombie.floor)
             if door and door.open:
                 zombie.waypoint = door.rect.center
             else:
                 zombie.waypoint = self._random_patrol_pos()
+
+    def _leaper_move_toward(self, zombie: ZombieState, target: Vec2, dt: float) -> None:
+        spec = ZOMBIES[zombie.kind]
+        to_target = Vec2(target.x - zombie.pos.x, target.y - zombie.pos.y)
+        distance = to_target.length()
+        if distance <= 0.01:
+            return
+        forward = to_target.normalized()
+        if zombie.sidestep_timer <= 0.0:
+            zombie.sidestep_timer = self.rng.uniform(0.55, 1.05)
+            zombie.sidestep_bias = self.rng.choice([-1.0, 1.0]) * self.rng.uniform(0.42, 0.78)
+        zombie.strafe_phase += dt * (1.75 + min(1.0, distance / 620.0) * 0.55)
+        wave = math.sin(zombie.strafe_phase) * 0.55 + math.sin(zombie.strafe_phase * 0.43 + zombie.sidestep_bias) * 0.25
+        lateral_strength = max(-0.74, min(0.74, wave + zombie.sidestep_bias * 0.32))
+        if distance < 150:
+            lateral_strength *= distance / 150.0
+        perpendicular = Vec2(-forward.y, forward.x)
+        blended = Vec2(
+            forward.x + perpendicular.x * lateral_strength,
+            forward.y + perpendicular.y * lateral_strength,
+        ).normalized()
+        zombie.facing = math.atan2(forward.y, forward.x)
+        speed = spec.speed * self.difficulty.zombie_speed_multiplier * 1.16
+        old_pos = zombie.pos.copy()
+        self._move_circle(zombie.pos, blended.scaled(speed * dt), spec.radius, zombie.floor)
+        if zombie.pos.distance_to(old_pos) < 0.5:
+            zombie.sidestep_bias *= -1.0
+            self._zombie_move_toward(zombie, target, dt, sprint=True)
+
+    def _try_poison_spit(self, zombie: ZombieState, target: PlayerState) -> None:
+        if zombie.special_cooldown > 0.0:
+            return
+        distance = zombie.pos.distance_to(target.pos)
+        if not 180 <= distance <= 720:
+            return
+        if self._line_blocked(zombie.pos, target.pos, zombie.floor):
+            return
+        direction = Vec2(target.pos.x - zombie.pos.x, target.pos.y - zombie.pos.y).normalized()
+        start = Vec2(
+            zombie.pos.x + direction.x * (ZOMBIES[zombie.kind].radius + 14),
+            zombie.pos.y + direction.y * (ZOMBIES[zombie.kind].radius + 14),
+        )
+        speed = 520.0
+        spit_id = self._id("spit")
+        self.poison_projectiles[spit_id] = PoisonProjectileState(
+            spit_id,
+            zombie.id,
+            start,
+            direction.scaled(speed),
+            target.pos.copy(),
+            floor=zombie.floor,
+        )
+        zombie.special_cooldown = self.rng.uniform(2.8, 4.2)
 
     def _try_zombie_attack(self, zombie: ZombieState, target: PlayerState) -> None:
         spec = ZOMBIES[zombie.kind]
@@ -490,6 +633,7 @@ class GameWorld:
             source = str(action.get("source", "backpack"))
             index = int(action.get("index", -1))
             slot = str(action.get("slot", ""))
+            module_slot = str(action.get("module_slot", ""))
             if source == "weapon_slot" and slot in player.weapons:
                 weapon = player.weapons.pop(slot, None)
                 if weapon:
@@ -497,7 +641,7 @@ class GameWorld:
                     if player.active_slot == slot:
                         player.active_slot = next((slot_key for slot_key in SLOTS if player.weapons.get(slot_key)), "1")
                 return
-            item = self._take_item(player, source, index, slot)
+            item = self._take_item(player, source, index, slot, module_slot)
             if item:
                 self._spawn_loot_at(player.pos.copy(), "item", item.key, item.amount, floor=player.floor)
         elif action_type == "use":
@@ -516,15 +660,17 @@ class GameWorld:
         dst_index = int(action.get("dst_index", -1))
         src_slot = str(action.get("src_slot", ""))
         dst_slot = str(action.get("dst_slot", ""))
-        item = self._take_item(player, src, src_index, src_slot)
+        src_module = str(action.get("src_module", ""))
+        dst_module = str(action.get("dst_module", ""))
+        item = self._take_item(player, src, src_index, src_slot, src_module)
         if not item:
             return
-        displaced = self._place_item(player, dst, dst_index, dst_slot, item)
+        displaced = self._place_item(player, dst, dst_index, dst_slot, item, dst_module)
         if displaced:
-            self._place_item(player, src, src_index, src_slot, displaced)
+            self._place_item(player, src, src_index, src_slot, displaced, src_module)
         self._recalculate_armor(player)
 
-    def _take_item(self, player: PlayerState, source: str, index: int, slot: str) -> InventoryItem | None:
+    def _take_item(self, player: PlayerState, source: str, index: int, slot: str, module_slot: str = "") -> InventoryItem | None:
         if source == "backpack" and 0 <= index < len(player.backpack):
             item = player.backpack[index]
             player.backpack[index] = None
@@ -537,9 +683,42 @@ class GameWorld:
             item = player.quick_items.get(slot)
             player.quick_items[slot] = None
             return item
+        if source == "weapon_module":
+            weapon = player.weapons.get(slot)
+            if not weapon or module_slot not in weapon.modules:
+                return None
+            module_key = weapon.modules.get(module_slot)
+            if not module_key:
+                return None
+            weapon.modules[module_slot] = None
+            if module_slot == "utility":
+                weapon.utility_on = False
+            if module_slot == "magazine":
+                weapon.ammo_in_mag = min(weapon.ammo_in_mag, self._weapon_magazine_size(weapon))
+            return InventoryItem(self._id("it"), module_key, 1)
         return None
 
-    def _place_item(self, player: PlayerState, destination: str, index: int, slot: str, item: InventoryItem) -> InventoryItem | None:
+    def _place_item(
+        self,
+        player: PlayerState,
+        destination: str,
+        index: int,
+        slot: str,
+        item: InventoryItem,
+        module_slot: str = "",
+    ) -> InventoryItem | None:
+        if destination == "weapon_module" and slot in player.weapons:
+            module = WEAPON_MODULES.get(item.key)
+            if not module or module.slot != module_slot:
+                return item
+            weapon = player.weapons[slot]
+            displaced_key = weapon.modules.get(module_slot)
+            weapon.modules[module_slot] = item.key
+            if module_slot == "magazine":
+                weapon.ammo_in_mag = min(weapon.ammo_in_mag, self._weapon_magazine_size(weapon))
+            if module_slot == "utility":
+                weapon.utility_on = False
+            return InventoryItem(self._id("it"), displaced_key, 1) if displaced_key else None
         if destination == "equipment" and slot in player.equipment:
             spec = ITEMS.get(item.key)
             if not spec or spec.equipment_slot != slot:
@@ -700,15 +879,36 @@ class GameWorld:
         if not weapon:
             return
         spec = WEAPONS[weapon.key]
-        if weapon.reload_left <= 0.0 and weapon.reserve_ammo > 0 and weapon.ammo_in_mag < spec.magazine_size:
+        if weapon.reload_left <= 0.0 and weapon.reserve_ammo > 0 and weapon.ammo_in_mag < self._weapon_magazine_size(weapon):
             weapon.reload_left = spec.reload_time
 
     def _finish_reload(self, weapon: WeaponRuntime) -> None:
-        spec = WEAPONS[weapon.key]
-        needed = spec.magazine_size - weapon.ammo_in_mag
+        needed = self._weapon_magazine_size(weapon) - weapon.ammo_in_mag
         loaded = min(needed, weapon.reserve_ammo)
         weapon.ammo_in_mag += loaded
         weapon.reserve_ammo -= loaded
+
+    def _weapon_magazine_size(self, weapon: WeaponRuntime) -> int:
+        base = WEAPONS[weapon.key].magazine_size
+        module_key = weapon.modules.get("magazine")
+        module = WEAPON_MODULES.get(module_key or "")
+        multiplier = module.magazine_multiplier if module else 1.0
+        return max(base, int(math.ceil(base * multiplier)))
+
+    def _weapon_spread(self, weapon: WeaponRuntime) -> float:
+        spread = WEAPONS[weapon.key].spread
+        module_key = weapon.modules.get("utility")
+        module = WEAPON_MODULES.get(module_key or "")
+        if module_key == "laser_module" and weapon.utility_on and module:
+            spread *= module.spread_multiplier
+        return spread
+
+    def _toggle_weapon_utility(self, player: PlayerState) -> None:
+        weapon = player.active_weapon()
+        if not weapon:
+            return
+        if weapon.modules.get("utility") in {"laser_module", "flashlight_module"}:
+            weapon.utility_on = not weapon.utility_on
 
     def _shoot(self, player: PlayerState) -> None:
         quick_item = player.quick_items.get(player.active_slot)
@@ -734,9 +934,10 @@ class GameWorld:
         damage_multiplier = self.difficulty.weapon_damage_multipliers.get(spec.key, self.difficulty.weapon_damage_multiplier)
         projectile_damage = max(1, int(round(spec.damage * damage_multiplier)))
         for pellet_index in range(spec.pellets):
-            spread = self.rng.uniform(-spec.spread, spec.spread)
+            weapon_spread = self._weapon_spread(weapon)
+            spread = self.rng.uniform(-weapon_spread, weapon_spread)
             if spec.pellets > 1:
-                spread += (pellet_index - (spec.pellets - 1) * 0.5) * spec.spread * 0.33
+                spread += (pellet_index - (spec.pellets - 1) * 0.5) * weapon_spread * 0.33
             angle = player.angle + spread
             velocity = Vec2(math.cos(angle) * spec.projectile_speed, math.sin(angle) * spec.projectile_speed)
             start = Vec2(
@@ -751,6 +952,7 @@ class GameWorld:
                 velocity=velocity,
                 damage=projectile_damage,
                 life=0.82,
+                floor=player.floor,
             )
 
     def _throw_grenade(self, player: PlayerState) -> None:
@@ -843,20 +1045,22 @@ class GameWorld:
 
         self.loot.pop(closest.id, None)
 
-    def _interact(self, player: PlayerState) -> None:
-        door = nearest_door(self.buildings, player.pos, INTERACT_RADIUS)
+    def _interact(self, player: PlayerState) -> bool:
+        door = nearest_door(self.buildings, player.pos, INTERACT_RADIUS, player.floor)
         if door:
             door.open = not door.open
-            return
+            return True
         building = nearest_stairs(self.buildings, player.pos, INTERACT_RADIUS)
         if building and building.bounds.contains(player.pos):
             player.floor += 1
             if player.floor > building.max_floor:
                 player.floor = building.min_floor
             player.inside_building = building.id
+            return True
+        return False
 
     def spawn_zombie(self, kind: str | None = None) -> ZombieState:
-        kind = kind or self.rng.choices(["walker", "runner", "brute"], weights=[0.58, 0.27, 0.15])[0]
+        kind = kind or self.rng.choices(["walker", "runner", "brute", "leaper"], weights=[0.48, 0.24, 0.14, 0.14])[0]
         spec = ZOMBIES[kind]
         pos = self._random_edge_pos()
         health = max(1, int(round(spec.health * self.difficulty.zombie_health_multiplier)))
@@ -1043,6 +1247,8 @@ class GameWorld:
             zombies=dict(self.zombies),
             projectiles=dict(self.projectiles),
             grenades=dict(self.grenades),
+            poison_projectiles=dict(self.poison_projectiles),
+            poison_pools=dict(self.poison_pools),
             loot=dict(self.loot),
             buildings=dict(self.buildings),
         )

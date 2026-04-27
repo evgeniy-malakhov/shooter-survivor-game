@@ -13,8 +13,10 @@ from client.network import OnlineClient, ping_server
 from shared.constants import ARMORS, MAP_HEIGHT, MAP_WIDTH, SLOTS, WEAPONS, ZOMBIES
 from shared.difficulty import DIFFICULTY_KEYS, load_difficulty
 from shared.items import EQUIPMENT_SLOTS, ITEMS, RECIPES
+from shared.level import tunnel_segments
 from shared.models import BuildingState, InputCommand, LootState, PlayerState, RectState, Vec2, WorldSnapshot
 from shared.simulation import GameWorld
+from shared.weapon_modules import WEAPON_MODULES, WEAPON_MODULE_SLOTS
 
 
 SCREEN_W = 1280
@@ -68,6 +70,9 @@ class GameApp:
         self.language = "en"
         self.locales = self._load_locales()
         self.item_images = self._load_item_images()
+        self._icon_cache: dict[tuple[str, int, int], pygame.Surface] = {}
+        self.damage_flash = 0.0
+        self._last_local_health: float | None = None
         self.state = "menu"
         self.player_name = "Operator"
         self.world: GameWorld | None = None
@@ -77,6 +82,7 @@ class GameApp:
         self.backpack_open = False
         self.settings_open = False
         self.craft_open = False
+        self.weapon_custom_open = False
         self.minimap_big = False
         self.running = True
         self.pending_reload = False
@@ -85,12 +91,14 @@ class GameApp:
         self.pending_interact = False
         self.pending_respawn = False
         self.pending_throw_grenade = False
+        self.pending_toggle_utility = False
         self.pending_inventory_action: dict[str, object] | None = None
         self.pending_craft_key: str | None = None
         self.pending_repair_slot: str | None = None
         self.pending_slot: str | None = None
         self.pending_equip_armor: str | None = None
         self.drag_source: dict[str, object] | None = None
+        self.custom_weapon_slot = "1"
         self.settings = {
             "bot_vision": True,
             "bot_vision_range": True,
@@ -136,6 +144,9 @@ class GameApp:
             "medium": "shield",
             "tactical": "shield",
             "heavy": "shield",
+            "laser_module": "circuit",
+            "flashlight_module": "plus_green",
+            "extended_mag": "ammo_pack",
             "medium_head": "light_helmet",
             "heavy_head": "light_helmet",
             "light_torso": "shield",
@@ -155,10 +166,14 @@ class GameApp:
             path = image_dir / f"{filename}.png"
             if path.exists():
                 try:
-                    images[key] = pygame.image.load(str(path)).convert_alpha()
+                    images[key] = self._load_alpha_image(path)
                 except pygame.error:
                     pass
         return images
+
+    def _load_alpha_image(self, path: Path) -> pygame.Surface:
+        image = pygame.image.load(str(path))
+        return image.convert_alpha()
 
     def item_title(self, key: str) -> str:
         return self.tr(f"item.{key}") if self.tr(f"item.{key}") != f"item.{key}" else ITEMS.get(key).title if key in ITEMS else key
@@ -191,7 +206,9 @@ class GameApp:
 
     def _handle_keydown(self, key: int) -> None:
         if key == pygame.K_ESCAPE:
-            if self.backpack_open or self.inventory_open or self.settings_open or self.craft_open:
+            if self.weapon_custom_open:
+                self.weapon_custom_open = False
+            elif self.backpack_open or self.inventory_open or self.settings_open or self.craft_open:
                 self.backpack_open = False
                 self.inventory_open = False
                 self.settings_open = False
@@ -211,10 +228,13 @@ class GameApp:
             self.inventory_open = opening
             if opening:
                 self.craft_open = False
+                self.weapon_custom_open = False
                 self.drag_source = None
         elif key == pygame.K_o:
             self.settings_open = not self.settings_open
         elif key == pygame.K_c:
+            if self.weapon_custom_open:
+                return
             opening = not self.craft_open
             self.craft_open = opening
             if opening:
@@ -227,6 +247,7 @@ class GameApp:
             self.pending_pickup = True
         elif key == pygame.K_f:
             self.pending_interact = True
+            self.pending_toggle_utility = True
         elif key == pygame.K_SPACE:
             self.pending_respawn = True
         elif key == pygame.K_g:
@@ -243,6 +264,14 @@ class GameApp:
         if self.backpack_open and self.state in {"single", "online_game"}:
             snapshot = self._snapshot()
             player = self._local_player(snapshot) if snapshot else None
+            if self.weapon_custom_open:
+                if event.button == 1 and self._handle_weapon_custom_click(pos, player):
+                    return
+            elif event.button == 1 and self._customize_button_rect().collidepoint(pos):
+                self.custom_weapon_slot = self._custom_weapon_slot(player)
+                self.weapon_custom_open = True
+                self.drag_source = None
+                return
             repair_slot = self._repair_slot_at(pos)
             if repair_slot:
                 self.pending_repair_slot = repair_slot
@@ -283,10 +312,16 @@ class GameApp:
                     action = {"type": "move", "src": self.drag_source["source"], "dst": dst}
                     if self.drag_source["source"] == "backpack":
                         action["src_index"] = self.drag_source["index"]
+                    elif self.drag_source["source"] == "weapon_module":
+                        action["src_slot"] = self.drag_source["slot"]
+                        action["src_module"] = self.drag_source["module_slot"]
                     else:
                         action["src_slot"] = self.drag_source["slot"]
                     if dst == "backpack":
                         action["dst_index"] = target["index"]
+                    elif dst == "weapon_module":
+                        action["dst_slot"] = target["slot"]
+                        action["dst_module"] = target["module_slot"]
                     elif dst in {"equipment", "quick_item"}:
                         action["dst_slot"] = target["slot"]
                     self.pending_inventory_action = action
@@ -294,6 +329,9 @@ class GameApp:
                 action = {"type": "drop", "source": self.drag_source["source"]}
                 if self.drag_source["source"] == "backpack":
                     action["index"] = self.drag_source["index"]
+                elif self.drag_source["source"] == "weapon_module":
+                    action["slot"] = self.drag_source["slot"]
+                    action["module_slot"] = self.drag_source["module_slot"]
                 else:
                     action["slot"] = self.drag_source["slot"]
                 self.pending_inventory_action = action
@@ -353,11 +391,25 @@ class GameApp:
 
     def _handle_craft_click(self, pos: tuple[int, int]) -> None:
         for index, recipe_key in enumerate(RECIPES):
-            col = index % 2
-            row = index // 2
-            rect = pygame.Rect(342 + col * 304, 190 + row * 76, 284, 64)
+            col = index % 3
+            row = index // 3
+            rect = pygame.Rect(342 + col * 204, 190 + row * 68, 188, 58)
             if rect.collidepoint(pos):
                 self.pending_craft_key = recipe_key
+
+    def _handle_weapon_custom_click(self, pos: tuple[int, int], player: PlayerState | None) -> bool:
+        if self._weapon_custom_close_rect().collidepoint(pos):
+            self.weapon_custom_open = False
+            self.drag_source = None
+            return True
+        if not player:
+            return False
+        for index, slot in enumerate(SLOTS):
+            rect = pygame.Rect(412 + (index % 5) * 82, 238 + (index // 5) * 48, 70, 34)
+            if rect.collidepoint(pos) and player.weapons.get(slot):
+                self.custom_weapon_slot = slot
+                return True
+        return False
 
     def _handle_server_click(self, pos: tuple[int, int]) -> None:
         if pygame.Rect(72, 632, 180, 46).collidepoint(pos):
@@ -392,12 +444,13 @@ class GameApp:
             self._refresh_pings()
 
         if self.state == "single" and self.world and self.local_player_id:
-            if self.settings_open or self.backpack_open or self.craft_open:
+            if self.settings_open or self.backpack_open or self.craft_open or self.weapon_custom_open:
                 if self.pending_inventory_action or self.pending_craft_key or self.pending_repair_slot:
                     command = self._build_input(self.local_player_id)
                     self.world.set_input(command)
                     self.world.update(0.0)
                     self._clear_transient_inputs()
+                self._update_damage_feedback(dt)
                 return
             command = self._build_input(self.local_player_id)
             self.world.set_input(command)
@@ -407,12 +460,26 @@ class GameApp:
             command = self._build_input(self.online.player_id)
             self.online.send_input(command)
             self._clear_transient_inputs()
+        self._update_damage_feedback(dt)
+
+    def _update_damage_feedback(self, dt: float) -> None:
+        self.damage_flash = max(0.0, self.damage_flash - dt * 1.9)
+        snapshot = self._snapshot()
+        player = self._local_player(snapshot) if snapshot else None
+        if not player:
+            self._last_local_health = None
+            return
+        previous = self._last_local_health
+        if previous is not None and player.alive and player.health < previous - 0.1:
+            loss = previous - player.health
+            self.damage_flash = min(1.0, max(self.damage_flash, 0.25 + min(0.55, loss / 55.0)))
+        self._last_local_health = player.health
 
     def _build_input(self, player_id: str) -> InputCommand:
         keys = pygame.key.get_pressed()
         move_x = float(keys[pygame.K_d] or keys[pygame.K_RIGHT]) - float(keys[pygame.K_a] or keys[pygame.K_LEFT])
         move_y = float(keys[pygame.K_s] or keys[pygame.K_DOWN]) - float(keys[pygame.K_w] or keys[pygame.K_UP])
-        ui_open = self.backpack_open or self.settings_open or self.craft_open
+        ui_open = self.backpack_open or self.settings_open or self.craft_open or self.weapon_custom_open
         if ui_open:
             move_x = 0.0
             move_y = 0.0
@@ -441,6 +508,7 @@ class GameApp:
             sneak=keys[pygame.K_LCTRL] or keys[pygame.K_RCTRL],
             respawn=self.pending_respawn,
             throw_grenade=self.pending_throw_grenade,
+            toggle_utility=self.pending_toggle_utility,
             inventory_action=self.pending_inventory_action,
             craft_key=self.pending_craft_key,
             repair_slot=self.pending_repair_slot,
@@ -455,6 +523,7 @@ class GameApp:
         self.pending_interact = False
         self.pending_respawn = False
         self.pending_throw_grenade = False
+        self.pending_toggle_utility = False
         self.pending_inventory_action = None
         self.pending_craft_key = None
         self.pending_repair_slot = None
@@ -479,6 +548,7 @@ class GameApp:
         self.backpack_open = False
         self.settings_open = False
         self.craft_open = False
+        self.weapon_custom_open = False
         self.state = "single"
 
     def _show_servers(self) -> None:
@@ -495,6 +565,8 @@ class GameApp:
             self.online.connect(entry.host, entry.port, self.player_name)
             self.world = None
             self.inventory_open = False
+            self.backpack_open = False
+            self.weapon_custom_open = False
             self.state = "online_game"
         except OSError as exc:
             entry.status = f"error: {exc}"
@@ -506,6 +578,7 @@ class GameApp:
         self.backpack_open = False
         self.settings_open = False
         self.craft_open = False
+        self.weapon_custom_open = False
 
     def _load_servers(self) -> list[ServerEntry]:
         path = ROOT / "servers.json"
@@ -640,14 +713,21 @@ class GameApp:
         self.screen.fill(BG)
         self._draw_world_background(camera)
         if snapshot:
+            self._draw_tunnels(snapshot, camera, player)
             self._draw_buildings(snapshot, camera, player)
             if player and self.settings["noise_radius"]:
                 self._draw_noise_radius(player, camera)
             self._draw_loot(snapshot, camera)
             self._draw_projectiles(snapshot, camera)
             self._draw_grenades(snapshot, camera)
+            self._draw_poison(snapshot, camera)
             self._draw_zombies(snapshot, camera)
             self._draw_players(snapshot, camera)
+            self._draw_weapon_utilities(snapshot, camera, player)
+            if player:
+                self._draw_tunnel_darkness(player, camera)
+            if player:
+                self._draw_damage_feedback(player)
             self._draw_hud(snapshot, player)
             self._draw_minimap(snapshot, player)
             self._draw_context_prompt(snapshot, player, camera)
@@ -687,6 +767,16 @@ class GameApp:
             3,
         )
 
+    def _draw_tunnels(self, snapshot: WorldSnapshot, camera: Vec2, player: PlayerState | None) -> None:
+        if not player or player.floor >= 0:
+            return
+        for tunnel in tunnel_segments(snapshot.buildings):
+            rect = pygame.Rect(int(tunnel.x - camera.x), int(tunnel.y - camera.y), int(tunnel.w), int(tunnel.h))
+            if not rect.colliderect(pygame.Rect(-120, -120, SCREEN_W + 240, SCREEN_H + 240)):
+                continue
+            pygame.draw.rect(self.screen, (10, 14, 20), rect, border_radius=10)
+            pygame.draw.rect(self.screen, (38, 52, 68), rect, 2, border_radius=10)
+
     def _draw_buildings(self, snapshot: WorldSnapshot, camera: Vec2, player: PlayerState | None) -> None:
         for building in snapshot.buildings.values():
             bx = int(building.bounds.x - camera.x)
@@ -717,6 +807,10 @@ class GameApp:
                     sx, sy = self._world_to_screen(stairs.center, camera)
                     self._draw_text("stairs", sx - 22, sy - 8, TEXT, self.small)
             for door in building.doors:
+                if player_inside and player and door.floor != player.floor:
+                    continue
+                if not player_inside and door.floor != 0:
+                    continue
                 color = GREEN if door.open else YELLOW
                 self._draw_rect_world(door.rect, camera, color)
 
@@ -746,6 +840,8 @@ class GameApp:
         for item in snapshot.loot.values():
             if player and item.floor != player.floor:
                 continue
+            if player and player.floor < 0 and not self._point_lit_by_flashlight(player, item.pos):
+                continue
             sx, sy = self._world_to_screen(item.pos, camera)
             if -30 <= sx <= SCREEN_W + 30 and -30 <= sy <= SCREEN_H + 30:
                 color = colors.get(item.kind, TEXT)
@@ -762,7 +858,10 @@ class GameApp:
                 self._draw_text(label, sx + 14, sy - 11, color, self.small)
 
     def _draw_projectiles(self, snapshot: WorldSnapshot, camera: Vec2) -> None:
+        player = self._local_player(snapshot)
         for projectile in snapshot.projectiles.values():
+            if player and projectile.floor != player.floor:
+                continue
             sx, sy = self._world_to_screen(projectile.pos, camera)
             tail = Vec2(projectile.pos.x - projectile.velocity.x * 0.025, projectile.pos.y - projectile.velocity.y * 0.025)
             tx, ty = self._world_to_screen(tail, camera)
@@ -779,6 +878,26 @@ class GameApp:
             pygame.draw.circle(self.screen, (10, 16, 12), (sx, sy), pulse + 5)
             pygame.draw.circle(self.screen, GREEN if grenade.timer > 0.6 else RED, (sx, sy), pulse)
             pygame.draw.circle(self.screen, YELLOW, (sx, sy), int(220 * max(0.0, 1.0 - grenade.timer / 2.0)), 1)
+
+    def _draw_poison(self, snapshot: WorldSnapshot, camera: Vec2) -> None:
+        player = self._local_player(snapshot)
+        for pool in snapshot.poison_pools.values():
+            if player and pool.floor != player.floor:
+                continue
+            sx, sy = self._world_to_screen(pool.pos, camera)
+            radius = int(pool.radius * (0.72 + 0.12 * math.sin(snapshot.time * 6.0 + sx)))
+            pool_surface = pygame.Surface((radius * 2 + 20, radius * 2 + 20), pygame.SRCALPHA)
+            center = (pool_surface.get_width() // 2, pool_surface.get_height() // 2)
+            pygame.draw.circle(pool_surface, (64, 255, 106, 64), center, radius)
+            pygame.draw.circle(pool_surface, (170, 255, 140, 92), center, max(8, radius // 2), 2)
+            self.screen.blit(pool_surface, (sx - center[0], sy - center[1]))
+        for spit in snapshot.poison_projectiles.values():
+            if player and spit.floor != player.floor:
+                continue
+            sx, sy = self._world_to_screen(spit.pos, camera)
+            pygame.draw.circle(self.screen, (28, 68, 24), (sx, sy), 13)
+            pygame.draw.circle(self.screen, (104, 255, 112), (sx, sy), 8)
+            pygame.draw.circle(self.screen, (220, 255, 180), (sx - 2, sy - 2), 3)
 
     def _draw_zombies(self, snapshot: WorldSnapshot, camera: Vec2) -> None:
         player = self._local_player(snapshot)
@@ -836,19 +955,152 @@ class GameApp:
             pygame.draw.line(self.screen, TEXT, (sx, sy), muzzle, 5)
             self._draw_text(player.name, sx - 28, sy - 48, TEXT, self.small)
 
+    def _draw_weapon_utilities(self, snapshot: WorldSnapshot, camera: Vec2, local: PlayerState | None) -> None:
+        for player in snapshot.players.values():
+            if local and player.floor != local.floor:
+                continue
+            weapon = player.active_weapon()
+            if not weapon or not weapon.utility_on:
+                continue
+            utility = weapon.modules.get("utility")
+            sx, sy = self._world_to_screen(player.pos, camera)
+            if utility == "laser_module":
+                module = WEAPON_MODULES.get(utility)
+                length = module.beam_length if module else 720
+                end = (int(sx + math.cos(player.angle) * length), int(sy + math.sin(player.angle) * length))
+                laser = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+                pygame.draw.line(laser, (255, 64, 88, 76), (sx, sy), end, 5)
+                pygame.draw.line(laser, (255, 210, 220, 138), (sx, sy), end, 1)
+                pygame.draw.circle(laser, (255, 68, 92, 150), end, 4)
+                self.screen.blit(laser, (0, 0))
+            elif utility == "flashlight_module":
+                self._draw_flashlight_cone(player, camera, soft=True)
+
+    def _draw_flashlight_cone(self, player: PlayerState, camera: Vec2, soft: bool) -> None:
+        module = WEAPON_MODULES.get("flashlight_module")
+        cone_range = module.cone_range if module else 620
+        half_angle = math.radians((module.cone_degrees if module else 58) * 0.5)
+        sx, sy = self._world_to_screen(player.pos, camera)
+        points = [
+            (sx, sy),
+            (int(sx + math.cos(player.angle - half_angle) * cone_range), int(sy + math.sin(player.angle - half_angle) * cone_range)),
+            (int(sx + math.cos(player.angle + half_angle) * cone_range), int(sy + math.sin(player.angle + half_angle) * cone_range)),
+        ]
+        cone = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        color = (255, 238, 168, 38 if soft else 118)
+        pygame.draw.polygon(cone, color, points)
+        pygame.draw.circle(cone, (255, 244, 184, 24), (sx, sy), 120)
+        self.screen.blit(cone, (0, 0))
+
+    def _draw_tunnel_darkness(self, player: PlayerState, camera: Vec2) -> None:
+        if player.floor >= 0:
+            return
+        has_flashlight = self._has_active_flashlight(player)
+        darkness = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        darkness.fill((0, 0, 0, 232 if not has_flashlight else 206))
+        if has_flashlight:
+            module = WEAPON_MODULES.get("flashlight_module")
+            cone_range = module.cone_range if module else 620
+            half_angle = math.radians((module.cone_degrees if module else 58) * 0.5)
+            sx, sy = self._world_to_screen(player.pos, camera)
+            points = [
+                (sx, sy),
+                (int(sx + math.cos(player.angle - half_angle) * cone_range), int(sy + math.sin(player.angle - half_angle) * cone_range)),
+                (int(sx + math.cos(player.angle + half_angle) * cone_range), int(sy + math.sin(player.angle + half_angle) * cone_range)),
+            ]
+            pygame.draw.polygon(darkness, (0, 0, 0, 58), points)
+            pygame.draw.circle(darkness, (0, 0, 0, 70), (sx, sy), 112)
+        self.screen.blit(darkness, (0, 0))
+        label = self.tr("hud.dark_flashlight" if not has_flashlight else "hud.dark")
+        badge = pygame.Rect(SCREEN_W - 288, SCREEN_H - 126, 260, 34)
+        pygame.draw.rect(self.screen, PANEL, badge, border_radius=7)
+        pygame.draw.rect(self.screen, YELLOW if not has_flashlight else CYAN, badge, 1, border_radius=7)
+        self._draw_text_fit(label, badge.inflate(-16, -8), TEXT, self.small, center=True)
+
+    def _has_active_flashlight(self, player: PlayerState | None) -> bool:
+        weapon = player.active_weapon() if player else None
+        return bool(weapon and weapon.utility_on and weapon.modules.get("utility") == "flashlight_module")
+
+    def _point_lit_by_flashlight(self, player: PlayerState, pos: Vec2) -> bool:
+        if player.floor >= 0:
+            return True
+        if not self._has_active_flashlight(player):
+            return False
+        distance = player.pos.distance_to(pos)
+        if distance < 100:
+            return True
+        module = WEAPON_MODULES.get("flashlight_module")
+        if distance > (module.cone_range if module else 620):
+            return False
+        angle_to = player.pos.angle_to(pos)
+        half_angle = math.radians((module.cone_degrees if module else 58) * 0.5)
+        return abs((angle_to - player.angle + math.pi) % math.tau - math.pi) <= half_angle
+
+    def _draw_damage_feedback(self, player: PlayerState) -> None:
+        if not player.alive:
+            return
+        critical = max(0.0, (25.0 - player.health) / 25.0)
+        pulse = (math.sin(time.time() * 7.4) + 1.0) * 0.5
+        hit = self.damage_flash
+        if hit <= 0.01 and critical <= 0.01:
+            return
+
+        overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        if hit > 0.01:
+            overlay.fill((120, 0, 8, int(44 * hit)))
+            edge_alpha = int(108 * hit)
+            for index in range(18):
+                alpha = max(0, edge_alpha - index * 6)
+                color = (150, 0, 10, alpha)
+                pygame.draw.rect(overlay, color, pygame.Rect(index * 7, 0, 7, SCREEN_H))
+                pygame.draw.rect(overlay, color, pygame.Rect(SCREEN_W - (index + 1) * 7, 0, 7, SCREEN_H))
+        if critical > 0.01:
+            alpha = int((20 + 44 * pulse) * critical)
+            overlay.fill((60, 0, 8, alpha), special_flags=pygame.BLEND_RGBA_ADD)
+            for index in range(20):
+                band_alpha = int((64 - index * 3) * critical * (0.55 + pulse * 0.45))
+                pygame.draw.rect(overlay, (90, 0, 10, band_alpha), pygame.Rect(0, index * 6, SCREEN_W, 6))
+                pygame.draw.rect(overlay, (90, 0, 10, band_alpha), pygame.Rect(0, SCREEN_H - (index + 1) * 6, SCREEN_W, 6))
+            center_band = pygame.Rect(0, SCREEN_H // 2 - 34, SCREEN_W, 68)
+            pygame.draw.rect(overlay, (0, 0, 0, int(32 * critical * pulse)), center_band)
+        self.screen.blit(overlay, (0, 0))
+
     def _draw_hud(self, snapshot: WorldSnapshot, player: PlayerState | None) -> None:
         if not player:
             return
         pygame.draw.rect(self.screen, PANEL, pygame.Rect(18, 18, 348, 132), border_radius=8)
         self._draw_text(player.name, 74, 30, TEXT, self.mid)
-        if not self._draw_item_icon("heart", pygame.Rect(31, 67, 24, 24)):
+        critical = player.alive and player.health < 25
+        pulse = (math.sin(time.time() * 8.0) + 1.0) * 0.5 if critical else 0.0
+        heart_size = 24 + int(7 * pulse if critical else 0)
+        heart_rect = pygame.Rect(43 - heart_size // 2, 79 - heart_size // 2, heart_size, heart_size)
+        if critical:
+            glow = pygame.Surface((58, 58), pygame.SRCALPHA)
+            pygame.draw.circle(glow, (255, 42, 58, int(72 + pulse * 70)), (29, 29), int(18 + pulse * 10))
+            self.screen.blit(glow, (14, 50))
+        if not self._draw_item_icon("heart", heart_rect):
             pygame.draw.circle(self.screen, RED, (42, 78), 9)
-        self._bar(62, 70, 270, 16, player.health / 100.0, RED)
+        health_color = (255, int(72 + pulse * 72), int(82 + pulse * 28)) if critical else RED
+        if critical:
+            pygame.draw.rect(self.screen, (122, 0, 18), pygame.Rect(58, 66, 278, 24), 2, border_radius=7)
+        self._bar(62, 70, 270, 16, player.health / 100.0, health_color)
+        if player.poison_left > 0:
+            poison_alpha = int(90 + 70 * ((math.sin(time.time() * 5.5) + 1.0) * 0.5))
+            pygame.draw.rect(self.screen, (92, 255, 114), pygame.Rect(58, 66, 278, 24), 2, border_radius=7)
+            pygame.draw.circle(self.screen, (30, 92, 34), (342, 78), 12)
+            pygame.draw.circle(self.screen, (110, 255, 118, poison_alpha), (342, 78), 8)
         armor_max = max(1, ARMORS[player.armor_key].armor_points)
         if not self._draw_item_icon("shield", pygame.Rect(31, 92, 24, 24)):
             pygame.draw.rect(self.screen, CYAN, pygame.Rect(34, 91, 18, 18), 2, border_radius=3)
         self._bar(62, 97, 270, 12, player.armor / armor_max, CYAN)
         self._draw_text(f"{self.tr('hud.score')} {player.score}   {self.tr('hud.medkits')} {player.medkits}", 34, 116, MUTED, self.small)
+        if player.poison_left > 0:
+            self._draw_text_fit(self.tr("hud.poisoned"), pygame.Rect(242, 116, 96, 18), GREEN, self.small, center=True)
+            badge = pygame.Rect(SCREEN_W - 86, 150, 58, 58)
+            pygame.draw.rect(self.screen, PANEL, badge, border_radius=10)
+            pygame.draw.rect(self.screen, GREEN, badge, 2, border_radius=10)
+            pygame.draw.circle(self.screen, (42, 124, 44), badge.center, 16)
+            pygame.draw.circle(self.screen, (130, 255, 124), badge.center, 9)
         noise_w = min(270, int(player.noise / 900 * 270))
         pygame.draw.rect(self.screen, (33, 40, 58), pygame.Rect(62, 134, 270, 5), border_radius=2)
         pygame.draw.rect(self.screen, YELLOW if player.sprinting else GREEN, pygame.Rect(62, 134, noise_w, 5), border_radius=2)
@@ -958,9 +1210,10 @@ class GameApp:
             self.tr("scoreboard.walker"),
             self.tr("scoreboard.runner"),
             self.tr("scoreboard.brute"),
+            self.tr("scoreboard.leaper"),
             self.tr("scoreboard.status"),
         ]
-        xs = [panel.x + 42, panel.x + 310, panel.x + 400, panel.x + 500, panel.x + 600, panel.x + 690]
+        xs = [panel.x + 42, panel.x + 286, panel.x + 365, panel.x + 452, panel.x + 535, panel.x + 618, panel.x + 700]
         for x, header in zip(xs, headers):
             self._draw_text(header, x, panel.y + 112, MUTED, self.small)
         y = panel.y + 150
@@ -972,6 +1225,7 @@ class GameApp:
                 str(player.kills_by_kind.get("walker", 0)),
                 str(player.kills_by_kind.get("runner", 0)),
                 str(player.kills_by_kind.get("brute", 0)),
+                str(player.kills_by_kind.get("leaper", 0)),
                 "alive" if player.alive else "dead",
             ]
             for x, value in zip(xs, values):
@@ -1041,9 +1295,15 @@ class GameApp:
 
         drop = self._drop_rect()
         drop_hovered = bool(self.drag_source and drop.collidepoint(pygame.mouse.get_pos()))
+        customize = self._customize_button_rect()
         pygame.draw.rect(self.screen, (60, 22, 30), drop, border_radius=8)
         pygame.draw.rect(self.screen, YELLOW if drop_hovered else RED, drop, 2, border_radius=8)
         self._draw_text(self.tr("backpack.drop"), drop.x + 44, drop.y + 20, TEXT, self.font)
+        pygame.draw.rect(self.screen, PANEL_2, customize, border_radius=8)
+        pygame.draw.rect(self.screen, PURPLE if self.weapon_custom_open else CYAN, customize, 2, border_radius=8)
+        self._draw_text_fit(self.tr("backpack.customize"), customize.inflate(-18, -8), TEXT, self.font, center=True)
+        if self.weapon_custom_open:
+            self._draw_weapon_customization(player)
         self._draw_drag_preview(player)
 
     def _draw_item(self, key: str, amount: int, rect: pygame.Rect) -> None:
@@ -1067,26 +1327,81 @@ class GameApp:
         self._draw_text(self.tr("craft.title"), panel.x + 34, panel.y + 24, TEXT, self.big)
         self._draw_text(self.tr("craft.caption"), panel.x + 38, panel.y + 90, MUTED, self.small)
         for index, recipe in enumerate(RECIPES.values()):
-            col = index % 2
-            row = index // 2
-            rect = pygame.Rect(panel.x + 42 + col * 304, panel.y + 116 + row * 76, 284, 64)
+            col = index % 3
+            row = index // 3
+            rect = pygame.Rect(panel.x + 42 + col * 204, panel.y + 116 + row * 68, 188, 58)
             can_craft = all(self._inventory_count(player, key) >= amount for key, amount in recipe.requires.items())
             pygame.draw.rect(self.screen, PANEL_2 if can_craft else (18, 22, 33), rect, border_radius=8)
             pygame.draw.rect(self.screen, GREEN if can_craft else (66, 72, 88), rect, 2 if can_craft else 1, border_radius=8)
             result_key, result_amount = recipe.result
-            self._draw_text_fit(f"{self.recipe_title(recipe.key)} x{result_amount}", pygame.Rect(rect.x + 14, rect.y + 7, rect.w - 28, 20), TEXT, self.font)
+            self._draw_text_fit(f"{self.recipe_title(recipe.key)} x{result_amount}", pygame.Rect(rect.x + 10, rect.y + 7, rect.w - 20, 18), TEXT, self.small)
             req_x = rect.x + 14
-            req_y = rect.y + 33
+            req_y = rect.y + 30
             for key, amount in recipe.requires.items():
                 have = self._inventory_count(player, key)
                 color = GREEN if have >= amount else RED
                 part = f"{self.item_title(key)} {have}/{amount}"
-                label_w = min(130, max(72, len(part) * 7))
+                label_w = min(92, max(58, len(part) * 6))
                 if req_x + label_w > rect.right - 10:
                     req_x = rect.x + 14
-                    req_y += 15
-                self._draw_text_fit(part, pygame.Rect(req_x, req_y, label_w, 15), color, self.small)
+                    req_y += 13
+                self._draw_text_fit(part, pygame.Rect(req_x, req_y, label_w, 13), color, self.small)
                 req_x += label_w + 8
+
+    def _draw_weapon_customization(self, player: PlayerState) -> None:
+        overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        overlay.fill((3, 6, 14, 118))
+        self.screen.blit(overlay, (0, 0))
+        panel = self._weapon_custom_panel_rect()
+        pygame.draw.rect(self.screen, PANEL, panel, border_radius=10)
+        pygame.draw.rect(self.screen, PURPLE, panel, 2, border_radius=10)
+        self._draw_text_fit(self.tr("weaponmods.title"), pygame.Rect(panel.x + 28, panel.y + 20, 360, 44), TEXT, self.mid)
+        self._draw_button(self._weapon_custom_close_rect(), self.tr("weaponmods.close"), False)
+
+        self._draw_text(self.tr("weaponmods.weapon"), panel.x + 34, panel.y + 74, MUTED, self.small)
+        for index, slot in enumerate(SLOTS):
+            rect = pygame.Rect(412 + (index % 5) * 82, 238 + (index // 5) * 48, 70, 34)
+            weapon = player.weapons.get(slot)
+            selected = slot == self._custom_weapon_slot(player)
+            pygame.draw.rect(self.screen, PANEL_2 if selected else BG, rect, border_radius=6)
+            pygame.draw.rect(self.screen, CYAN if selected else (52, 68, 98), rect, 2 if selected else 1, border_radius=6)
+            label = slot if not weapon else f"{slot} {self.weapon_title(weapon.key).split()[0]}"
+            self._draw_text_fit(label, rect.inflate(-8, -6), TEXT if weapon else MUTED, self.small, center=True)
+
+        weapon_slot = self._custom_weapon_slot(player)
+        weapon = player.weapons.get(weapon_slot)
+        if not weapon:
+            self._draw_text(self.tr("weaponmods.empty"), panel.x + 42, panel.y + 170, MUTED, self.font)
+            return
+        mag_size = self._client_weapon_magazine_size(weapon)
+        self._draw_item_icon(weapon.key, pygame.Rect(panel.x + 38, panel.y + 122, 54, 44))
+        self._draw_text_fit(self.weapon_title(weapon.key), pygame.Rect(panel.x + 104, panel.y + 122, 280, 24), TEXT, self.font)
+        self._draw_text(f"{self.tr('weaponmods.magazine')}: {mag_size}", panel.x + 104, panel.y + 150, MUTED, self.small)
+        self._draw_text(self.tr("weaponmods.drag"), panel.x + 42, panel.y + 208, MUTED, self.small)
+
+        for module_slot in WEAPON_MODULE_SLOTS:
+            rect = self._weapon_module_rect(module_slot)
+            module_key = weapon.modules.get(module_slot)
+            pygame.draw.rect(self.screen, PANEL_2 if module_key else BG, rect, border_radius=8)
+            pygame.draw.rect(self.screen, GREEN if module_key else (58, 68, 92), rect, 2, border_radius=8)
+            self._draw_text(self.tr(f"weaponmods.slot.{module_slot}"), rect.x + 12, rect.y + 10, MUTED, self.small)
+            dragging_this_module = (
+                self.drag_source
+                and self.drag_source.get("source") == "weapon_module"
+                and self.drag_source.get("slot") == weapon_slot
+                and self.drag_source.get("module_slot") == module_slot
+            )
+            if module_key and not dragging_this_module:
+                self._draw_item_icon(module_key, pygame.Rect(rect.x + 18, rect.y + 28, 44, 38))
+                self._draw_text_fit(self.item_title(module_key), pygame.Rect(rect.x + 70, rect.y + 34, 92, 20), TEXT, self.small)
+            else:
+                self._draw_text_fit(self.tr("weaponmods.empty_slot"), pygame.Rect(rect.x + 12, rect.y + 40, rect.w - 24, 20), MUTED, self.small, center=True)
+
+    def _client_weapon_magazine_size(self, weapon: object) -> int:
+        base = WEAPONS[weapon.key].magazine_size
+        module_key = weapon.modules.get("magazine")
+        module = WEAPON_MODULES.get(module_key or "")
+        return max(base, int(math.ceil(base * (module.magazine_multiplier if module else 1.0))))
 
     def _draw_settings(self, panel_only: bool = False) -> None:
         if not panel_only:
@@ -1149,6 +1464,21 @@ class GameApp:
     def _drop_rect(self) -> pygame.Rect:
         return pygame.Rect(1020, 590, 190, 64)
 
+    def _customize_button_rect(self) -> pygame.Rect:
+        return pygame.Rect(1020, 514, 190, 54)
+
+    def _weapon_custom_panel_rect(self) -> pygame.Rect:
+        return pygame.Rect(360, 172, 560, 390)
+
+    def _weapon_custom_close_rect(self) -> pygame.Rect:
+        panel = self._weapon_custom_panel_rect()
+        return pygame.Rect(panel.right - 104, panel.y + 22, 74, 34)
+
+    def _weapon_module_rect(self, module_slot: str) -> pygame.Rect:
+        order = {"utility": 0, "magazine": 1}
+        panel = self._weapon_custom_panel_rect()
+        return pygame.Rect(panel.x + 72 + order.get(module_slot, 0) * 220, panel.y + 266, 178, 82)
+
     def _equipment_rect(self, slot: str) -> pygame.Rect:
         order = {"head": 0, "torso": 1, "arms": 2, "legs": 3}
         return pygame.Rect(126, 170 + order[slot] * 94, 134, 72)
@@ -1161,6 +1491,11 @@ class GameApp:
         return None
 
     def _inventory_target_at(self, pos: tuple[int, int], player: PlayerState | None = None) -> dict[str, object] | None:
+        if self.weapon_custom_open and player:
+            weapon_slot = self._custom_weapon_slot(player)
+            for module_slot in WEAPON_MODULE_SLOTS:
+                if self._weapon_module_rect(module_slot).collidepoint(pos):
+                    return {"source": "weapon_module", "slot": weapon_slot, "module_slot": module_slot}
         for index, slot in enumerate(SLOTS):
             if self._quick_rect(index).collidepoint(pos):
                 if player and player.weapons.get(slot):
@@ -1231,10 +1566,23 @@ class GameApp:
         if source == "quick_item":
             item = player.quick_items.get(str(self.drag_source.get("slot", "")))
             return (item.key, item.amount, item.durability) if item else None
+        if source == "weapon_module":
+            weapon = player.weapons.get(str(self.drag_source.get("slot", "")))
+            module_key = weapon.modules.get(str(self.drag_source.get("module_slot", ""))) if weapon else None
+            return (module_key, 1, 100.0) if module_key else None
         if source == "weapon_slot":
             weapon = player.weapons.get(str(self.drag_source.get("slot", "")))
             return (weapon.key, 1, weapon.durability) if weapon else None
         return None
+
+    def _custom_weapon_slot(self, player: PlayerState | None) -> str:
+        if player and player.weapons.get(self.custom_weapon_slot):
+            return self.custom_weapon_slot
+        if player and player.weapons.get(player.active_slot):
+            return player.active_slot
+        if player:
+            return next((slot for slot in SLOTS if player.weapons.get(slot)), "1")
+        return "1"
 
     def _draw_drag_preview(self, player: PlayerState) -> None:
         payload = self._dragged_payload(player)
@@ -1258,12 +1606,51 @@ class GameApp:
             self._mini_durability(rect, durability)
 
     def _draw_item_icon(self, key: str, rect: pygame.Rect) -> bool:
-        image = self.item_images.get(key)
-        if not image:
+        icon = self._scaled_icon(key, rect.size)
+        if not icon:
             return False
-        icon = pygame.transform.smoothscale(image, (rect.w, rect.h))
-        self.screen.blit(icon, rect)
+        target = icon.get_rect(center=rect.center)
+        color = self._icon_color(key)
+
+        aura_rect = target.inflate(max(10, rect.w // 3), max(10, rect.h // 3))
+        aura = pygame.Surface(aura_rect.size, pygame.SRCALPHA)
+        pygame.draw.ellipse(aura, (*color, 26), aura.get_rect())
+        pygame.draw.ellipse(aura, (255, 255, 255, 18), aura.get_rect().inflate(-aura_rect.w // 3, -aura_rect.h // 3))
+        self.screen.blit(aura, aura_rect)
+
+        shadow = icon.copy()
+        shadow.fill((0, 0, 0, 120), special_flags=pygame.BLEND_RGBA_MULT)
+        self.screen.blit(shadow, target.move(2, 3))
+        self.screen.blit(icon, target)
         return True
+
+    def _scaled_icon(self, key: str, size: tuple[int, int]) -> pygame.Surface | None:
+        source = self.item_images.get(key)
+        if not source:
+            return None
+        max_w, max_h = max(1, size[0]), max(1, size[1])
+        source_w, source_h = source.get_size()
+        scale = min(max_w / max(1, source_w), max_h / max(1, source_h))
+        width = max(1, int(source_w * scale))
+        height = max(1, int(source_h * scale))
+        cache_key = (key, width, height)
+        icon = self._icon_cache.get(cache_key)
+        if icon is None:
+            icon = pygame.transform.smoothscale(source, (width, height))
+            self._icon_cache[cache_key] = icon
+        return icon
+
+    def _icon_color(self, key: str) -> tuple[int, int, int]:
+        if key == "heart":
+            return RED
+        if key == "shield" or key in ARMORS:
+            return CYAN
+        if key in WEAPONS:
+            return YELLOW
+        spec = ITEMS.get(key)
+        if spec:
+            return spec.color
+        return TEXT
 
     def _mini_durability(self, rect: pygame.Rect, durability: float) -> None:
         color = GREEN if durability >= 55 else YELLOW if durability >= 25 else RED

@@ -17,6 +17,18 @@ def make_buildings() -> dict[str, BuildingState]:
     return {building.id: building for building in (_make_building(*spec) for spec in specs)}
 
 
+def tunnel_segments(buildings: dict[str, BuildingState]) -> list[RectState]:
+    order = ["b1", "b2", "b3", "b5", "b6", "b4", "b1"]
+    centers = [buildings[key].bounds.center for key in order if key in buildings]
+    tunnels: list[RectState] = []
+    width = 118.0
+    for start, end in zip(centers, centers[1:]):
+        mid = Vec2(end.x, start.y)
+        tunnels.append(_corridor(start, mid, width))
+        tunnels.append(_corridor(mid, end, width))
+    return tunnels
+
+
 def _make_building(building_id: str, name: str, x: float, y: float, w: float, h: float) -> BuildingState:
     bounds = RectState(x, y, w, h)
     first_inner_door_y = y + h * 0.30
@@ -57,6 +69,14 @@ def _make_building(building_id: str, name: str, x: float, y: float, w: float, h:
     return BuildingState(building_id, name, bounds, walls, doors, props, stairs, floors=4, min_floor=-1)
 
 
+def _corridor(start: Vec2, end: Vec2, width: float) -> RectState:
+    if abs(start.x - end.x) >= abs(start.y - end.y):
+        x = min(start.x, end.x)
+        return RectState(x, start.y - width * 0.5, abs(start.x - end.x), width)
+    y = min(start.y, end.y)
+    return RectState(start.x - width * 0.5, y, width, abs(start.y - end.y))
+
+
 def point_building(buildings: dict[str, BuildingState], pos: Vec2) -> str | None:
     for building in buildings.values():
         if building.bounds.contains(pos):
@@ -73,11 +93,13 @@ def all_closed_walls(buildings: dict[str, BuildingState], floor: int = 0) -> lis
     return walls
 
 
-def nearest_door(buildings: dict[str, BuildingState], pos: Vec2, radius: float) -> DoorState | None:
+def nearest_door(buildings: dict[str, BuildingState], pos: Vec2, radius: float, floor: int | None = None) -> DoorState | None:
     best: DoorState | None = None
     best_distance = radius
     for building in buildings.values():
         for door in building.doors:
+            if floor is not None and door.floor != floor:
+                continue
             distance = door.rect.center.distance_to(pos)
             if distance <= best_distance:
                 best = door

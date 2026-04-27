@@ -243,6 +243,8 @@ class WeaponRuntime:
     cooldown: float = 0.0
     reload_left: float = 0.0
     durability: float = 100.0
+    modules: dict[str, str | None] = field(default_factory=lambda: {"utility": None, "magazine": None})
+    utility_on: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -252,11 +254,13 @@ class WeaponRuntime:
             "cooldown": round(self.cooldown, 3),
             "reload_left": round(self.reload_left, 3),
             "durability": round(self.durability, 2),
+            "modules": dict(self.modules),
+            "utility_on": self.utility_on,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "WeaponRuntime":
-        return cls(
+        weapon = cls(
             key=str(data["key"]),
             ammo_in_mag=int(data.get("ammo_in_mag", 0)),
             reserve_ammo=int(data.get("reserve_ammo", 0)),
@@ -264,6 +268,9 @@ class WeaponRuntime:
             reload_left=float(data.get("reload_left", 0.0)),
             durability=float(data.get("durability", 100.0)),
         )
+        weapon.modules.update({str(slot): value if value is None else str(value) for slot, value in data.get("modules", {}).items()})
+        weapon.utility_on = bool(data.get("utility_on", False))
+        return weapon
 
 
 @dataclass(slots=True)
@@ -295,6 +302,9 @@ class PlayerState:
     healing_left: float = 0.0
     healing_rate: float = 0.0
     healing_pool: float = 0.0
+    poison_left: float = 0.0
+    poison_tick: float = 0.0
+    poison_damage: int = 0
     weapons: dict[str, WeaponRuntime] = field(default_factory=dict)
 
     def active_weapon(self) -> WeaponRuntime | None:
@@ -327,6 +337,9 @@ class PlayerState:
             "healing_left": round(self.healing_left, 3),
             "healing_rate": round(self.healing_rate, 3),
             "healing_pool": round(self.healing_pool, 3),
+            "poison_left": round(self.poison_left, 3),
+            "poison_tick": round(self.poison_tick, 3),
+            "poison_damage": self.poison_damage,
             "weapons": {slot: weapon.to_dict() for slot, weapon in self.weapons.items()},
         }
 
@@ -364,6 +377,9 @@ class PlayerState:
             healing_left=float(data.get("healing_left", 0.0)),
             healing_rate=float(data.get("healing_rate", 0.0)),
             healing_pool=float(data.get("healing_pool", 0.0)),
+            poison_left=float(data.get("poison_left", 0.0)),
+            poison_tick=float(data.get("poison_tick", 0.0)),
+            poison_damage=int(data.get("poison_damage", 0)),
         )
         player.weapons = {
             str(slot): WeaponRuntime.from_dict(weapon)
@@ -388,6 +404,10 @@ class ZombieState:
     search_timer: float = 0.0
     alertness: float = 0.0
     idle_timer: float = 0.0
+    special_cooldown: float = 0.0
+    strafe_phase: float = 0.0
+    sidestep_bias: float = 0.0
+    sidestep_timer: float = 0.0
     floor: int = 0
     inside_building: str | None = None
 
@@ -407,6 +427,10 @@ class ZombieState:
             "search_timer": round(self.search_timer, 3),
             "alertness": round(self.alertness, 3),
             "idle_timer": round(self.idle_timer, 3),
+            "special_cooldown": round(self.special_cooldown, 3),
+            "strafe_phase": round(self.strafe_phase, 3),
+            "sidestep_bias": round(self.sidestep_bias, 3),
+            "sidestep_timer": round(self.sidestep_timer, 3),
             "floor": self.floor,
             "inside_building": self.inside_building,
         }
@@ -428,6 +452,10 @@ class ZombieState:
             search_timer=float(data.get("search_timer", 0.0)),
             alertness=float(data.get("alertness", 0.0)),
             idle_timer=float(data.get("idle_timer", 0.0)),
+            special_cooldown=float(data.get("special_cooldown", 0.0)),
+            strafe_phase=float(data.get("strafe_phase", 0.0)),
+            sidestep_bias=float(data.get("sidestep_bias", 0.0)),
+            sidestep_timer=float(data.get("sidestep_timer", 0.0)),
             floor=int(data.get("floor", 0)),
             inside_building=data.get("inside_building"),
         )
@@ -442,6 +470,7 @@ class ProjectileState:
     damage: int
     life: float
     radius: float = 5.0
+    floor: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -452,6 +481,7 @@ class ProjectileState:
             "damage": self.damage,
             "life": round(self.life, 3),
             "radius": self.radius,
+            "floor": self.floor,
         }
 
     @classmethod
@@ -464,6 +494,7 @@ class ProjectileState:
             damage=int(data.get("damage", 1)),
             life=float(data.get("life", 0.0)),
             radius=float(data.get("radius", 5.0)),
+            floor=int(data.get("floor", 0)),
         )
 
 
@@ -498,6 +529,71 @@ class GrenadeState:
             timer=float(data.get("timer", 0.0)),
             floor=int(data.get("floor", 0)),
             radius=float(data.get("radius", 10.0)),
+        )
+
+
+@dataclass(slots=True)
+class PoisonProjectileState:
+    id: str
+    owner_id: str
+    pos: Vec2
+    velocity: Vec2
+    target: Vec2
+    floor: int = 0
+    radius: float = 9.0
+    life: float = 2.4
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "owner_id": self.owner_id,
+            "pos": self.pos.to_dict(),
+            "velocity": self.velocity.to_dict(),
+            "target": self.target.to_dict(),
+            "floor": self.floor,
+            "radius": self.radius,
+            "life": round(self.life, 3),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "PoisonProjectileState":
+        return cls(
+            id=str(data["id"]),
+            owner_id=str(data.get("owner_id", "")),
+            pos=Vec2.from_dict(data.get("pos", {})),
+            velocity=Vec2.from_dict(data.get("velocity", {})),
+            target=Vec2.from_dict(data.get("target", {})),
+            floor=int(data.get("floor", 0)),
+            radius=float(data.get("radius", 9.0)),
+            life=float(data.get("life", 2.4)),
+        )
+
+
+@dataclass(slots=True)
+class PoisonPoolState:
+    id: str
+    pos: Vec2
+    floor: int = 0
+    timer: float = 5.0
+    radius: float = 54.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "pos": self.pos.to_dict(),
+            "floor": self.floor,
+            "timer": round(self.timer, 3),
+            "radius": self.radius,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "PoisonPoolState":
+        return cls(
+            id=str(data["id"]),
+            pos=Vec2.from_dict(data.get("pos", {})),
+            floor=int(data.get("floor", 0)),
+            timer=float(data.get("timer", 5.0)),
+            radius=float(data.get("radius", 54.0)),
         )
 
 
@@ -548,6 +644,7 @@ class InputCommand:
     sneak: bool = False
     respawn: bool = False
     throw_grenade: bool = False
+    toggle_utility: bool = False
     inventory_action: dict[str, Any] | None = None
     craft_key: str | None = None
     repair_slot: str | None = None
@@ -570,6 +667,7 @@ class InputCommand:
             "sneak": self.sneak,
             "respawn": self.respawn,
             "throw_grenade": self.throw_grenade,
+            "toggle_utility": self.toggle_utility,
             "inventory_action": self.inventory_action,
             "craft_key": self.craft_key,
             "repair_slot": self.repair_slot,
@@ -594,6 +692,7 @@ class InputCommand:
             sneak=bool(data.get("sneak", False)),
             respawn=bool(data.get("respawn", False)),
             throw_grenade=bool(data.get("throw_grenade", False)),
+            toggle_utility=bool(data.get("toggle_utility", False)),
             inventory_action=data.get("inventory_action"),
             craft_key=data.get("craft_key"),
             repair_slot=data.get("repair_slot"),
@@ -612,6 +711,8 @@ class WorldSnapshot:
     projectiles: dict[str, ProjectileState]
     loot: dict[str, LootState]
     grenades: dict[str, GrenadeState] = field(default_factory=dict)
+    poison_projectiles: dict[str, PoisonProjectileState] = field(default_factory=dict)
+    poison_pools: dict[str, PoisonPoolState] = field(default_factory=dict)
     buildings: dict[str, BuildingState] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -623,6 +724,8 @@ class WorldSnapshot:
             "zombies": {key: value.to_dict() for key, value in self.zombies.items()},
             "projectiles": {key: value.to_dict() for key, value in self.projectiles.items()},
             "grenades": {key: value.to_dict() for key, value in self.grenades.items()},
+            "poison_projectiles": {key: value.to_dict() for key, value in self.poison_projectiles.items()},
+            "poison_pools": {key: value.to_dict() for key, value in self.poison_pools.items()},
             "loot": {key: value.to_dict() for key, value in self.loot.items()},
             "buildings": {key: value.to_dict() for key, value in self.buildings.items()},
         }
@@ -637,6 +740,11 @@ class WorldSnapshot:
             zombies={key: ZombieState.from_dict(value) for key, value in data.get("zombies", {}).items()},
             projectiles={key: ProjectileState.from_dict(value) for key, value in data.get("projectiles", {}).items()},
             grenades={key: GrenadeState.from_dict(value) for key, value in data.get("grenades", {}).items()},
+            poison_projectiles={
+                key: PoisonProjectileState.from_dict(value)
+                for key, value in data.get("poison_projectiles", {}).items()
+            },
+            poison_pools={key: PoisonPoolState.from_dict(value) for key, value in data.get("poison_pools", {}).items()},
             loot={key: LootState.from_dict(value) for key, value in data.get("loot", {}).items()},
             buildings={key: BuildingState.from_dict(value) for key, value in data.get("buildings", {}).items()},
         )
