@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import math
 import random
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 
 from shared.constants import (
@@ -72,7 +74,20 @@ class GameWorld:
         self._next_id = 1
         self._spawn_timer = 0.0
         self._loot_timer = 0.0
+
+        # Multithreading components for bot AI
+        self._bot_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ZombieAI")
+        self._zombie_lock = threading.RLock()  # Lock for zombie state modifications
+        self._world_lock = threading.RLock()  # Lock for world state modifications
+        self._projectile_lock = threading.RLock()  # Lock for projectile operations
+        self._interaction_lock = threading.RLock()  # Lock for player interactions
+
         self._prime_map()
+
+    def cleanup(self) -> None:
+        """Clean up resources including thread pool"""
+        if hasattr(self, '_bot_executor'):
+            self._bot_executor.shutdown(wait=True)
 
     def _id(self, prefix: str) -> str:
         value = f"{prefix}{self._next_id}"
@@ -230,32 +245,62 @@ class GameWorld:
         return SPRINT_NOISE if player.sprinting else WALK_NOISE
 
     def _update_projectiles(self, dt: float) -> None:
-        dead_projectiles: list[str] = []
-        for projectile in self.projectiles.values():
-            projectile.life -= dt
-            projectile.pos.add(projectile.velocity.scaled(dt))
-            if (
-                projectile.life <= 0.0
-                or projectile.pos.x < 0
-                or projectile.pos.y < 0
-                or projectile.pos.x > MAP_WIDTH
-                or projectile.pos.y > MAP_HEIGHT
-                or self._blocked_at(projectile.pos, projectile.radius, projectile.floor)
-            ):
-                dead_projectiles.append(projectile.id)
-                continue
+        with self._projectile_lock:
+            dead_projectiles: list[str] = []
 
-            for zombie in list(self.zombies.values()):
-                if zombie.floor != projectile.floor:
+            # Create a snapshot of projectiles to avoid modification during iteration
+            projectile_snapshot = list(self.projectiles.values())
+
+            for projectile in projectile_snapshot:
+                # Skip if projectile was already removed
+                if projectile.id not in self.projectiles:
                     continue
-                spec = ZOMBIES[zombie.kind]
-                if projectile.pos.distance_to(zombie.pos) <= spec.radius + projectile.radius:
-                    self._damage_zombie(zombie, projectile.damage, projectile.owner_id)
+
+                projectile.life -= dt
+                projectile.pos.add(projectile.velocity.scaled(dt))
+
+                # Check for projectile expiration or collision with walls
+                if (
+                    projectile.life <= 0.0
+                    or projectile.pos.x < 0
+                    or projectile.pos.y < 0
+                    or projectile.pos.x > MAP_WIDTH
+                    or projectile.pos.y > MAP_HEIGHT
+                    or self._blocked_at(projectile.pos, projectile.radius, projectile.floor)
+                ):
                     dead_projectiles.append(projectile.id)
+                    continue
+
+                # Thread-safe zombie collision detection
+                hit_target = False
+                with self._zombie_lock:
+                    # Create snapshot of zombies for collision detection
+                    zombie_snapshot = list(self.zombies.values())
+
+                for zombie in zombie_snapshot:
+                    # Skip if zombie was removed during iteration
+                    if zombie.id not in self.zombies:
+                        continue
+
+                    if zombie.floor != projectile.floor:
+                        continue
+
+                    spec = ZOMBIES[zombie.kind]
+                    if projectile.pos.distance_to(zombie.pos) <= spec.radius + projectile.radius:
+                        # Apply damage in thread-safe manner
+                        with self._zombie_lock:
+                            if zombie.id in self.zombies:  # Double-check zombie still exists
+                                self._damage_zombie(zombie, projectile.damage, projectile.owner_id)
+                                dead_projectiles.append(projectile.id)
+                                hit_target = True
+                                break
+
+                if hit_target:
                     break
 
-        for projectile_id in dead_projectiles:
-            self.projectiles.pop(projectile_id, None)
+            # Remove dead projectiles
+            for projectile_id in dead_projectiles:
+                self.projectiles.pop(projectile_id, None)
 
     def _update_grenades(self, dt: float) -> None:
         detonated: list[str] = []
@@ -346,11 +391,52 @@ class GameWorld:
 
     def _update_zombies(self, dt: float) -> None:
         living_players = [player for player in self.players.values() if player.alive]
-        for zombie in list(self.zombies.values()):
+        zombie_list = list(self.zombies.values())
+
+        # Use parallel processing for zombie AI if we have multiple zombies
+        if len(zombie_list) > 3:
+            self._update_zombies_parallel(zombie_list, living_players, dt)
+        else:
+            # Use sequential processing for small numbers of zombies to avoid overhead
+            self._update_zombies_sequential(zombie_list, living_players, dt)
+
+    def _update_zombies_sequential(self, zombie_list: list[ZombieState], living_players: list[PlayerState], dt: float) -> None:
+        """Sequential zombie update for small numbers of zombies"""
+        for zombie in zombie_list:
+            self._update_single_zombie(zombie, living_players, dt)
+
+    def _update_zombies_parallel(self, zombie_list: list[ZombieState], living_players: list[PlayerState], dt: float) -> None:
+        """Parallel zombie update for better performance with many zombies"""
+        # Split zombies into chunks for parallel processing
+        chunk_size = max(1, len(zombie_list) // 4)  # 4 workers
+        zombie_chunks = [zombie_list[i:i + chunk_size] for i in range(0, len(zombie_list), chunk_size)]
+
+        # Submit zombie update tasks to thread pool
+        futures = []
+        for chunk in zombie_chunks:
+            future = self._bot_executor.submit(self._update_zombie_chunk, chunk, living_players, dt)
+            futures.append(future)
+
+        # Wait for all zombie updates to complete
+        for future in as_completed(futures):
+            try:
+                future.result()  # This will raise any exceptions that occurred
+            except Exception as e:
+                print(f"Zombie AI thread error: {e}")
+
+    def _update_zombie_chunk(self, zombie_chunk: list[ZombieState], living_players: list[PlayerState], dt: float) -> None:
+        """Update a chunk of zombies in parallel"""
+        for zombie in zombie_chunk:
+            self._update_single_zombie(zombie, living_players, dt)
+
+    def _update_single_zombie(self, zombie: ZombieState, living_players: list[PlayerState], dt: float) -> None:
+        """Update a single zombie's AI and state"""
+        with self._zombie_lock:
             spec = ZOMBIES[zombie.kind]
             zombie.attack_cooldown = max(0.0, zombie.attack_cooldown - dt)
             zombie.special_cooldown = max(0.0, zombie.special_cooldown - dt)
             zombie.sidestep_timer = max(0.0, zombie.sidestep_timer - dt)
+
             visible_player = self._visible_player(zombie, living_players)
             if visible_player:
                 zombie.mode = "chase"
@@ -568,22 +654,32 @@ class GameWorld:
         return min(heard, key=lambda player: zombie.pos.distance_to(player.pos))
 
     def _damage_zombie(self, zombie: ZombieState, damage: int, owner_id: str) -> None:
-        if zombie.armor > 0:
-            blocked = min(zombie.armor, math.ceil(damage * 0.55))
-            zombie.armor -= blocked
-            damage -= blocked // 2
-        zombie.health -= max(1, damage)
-        zombie.mode = "search"
-        zombie.last_known_pos = self.players[owner_id].pos.copy() if owner_id in self.players else zombie.last_known_pos
-        zombie.search_timer = SEARCH_DURATION
-        if zombie.health <= 0:
-            self.zombies.pop(zombie.id, None)
-            player = self.players.get(owner_id)
-            if player:
-                player.score += 1
-                player.kills_by_kind[zombie.kind] = player.kills_by_kind.get(zombie.kind, 0) + 1
-            if self.rng.random() < 0.45:
-                self._drop_from_zombie(zombie.pos)
+        # Thread-safe damage calculation
+        with self._zombie_lock:
+            # Double-check zombie still exists
+            if zombie.id not in self.zombies:
+                return
+
+            if zombie.armor > 0:
+                blocked = min(zombie.armor, math.ceil(damage * 0.55))
+                zombie.armor -= blocked
+                damage -= blocked // 2
+
+            zombie.health -= max(1, damage)
+            zombie.mode = "search"
+            zombie.last_known_pos = self.players[owner_id].pos.copy() if owner_id in self.players else zombie.last_known_pos
+            zombie.search_timer = SEARCH_DURATION
+
+            if zombie.health <= 0:
+                # Remove zombie safely
+                dead_zombie = self.zombies.pop(zombie.id, None)
+                if dead_zombie:
+                    player = self.players.get(owner_id)
+                    if player:
+                        player.score += 1
+                        player.kills_by_kind[zombie.kind] = player.kills_by_kind.get(zombie.kind, 0) + 1
+                    if self.rng.random() < 0.45:
+                        self._drop_from_zombie(zombie.pos)
 
     def _damage_player(self, player: PlayerState, damage: int) -> None:
         player.healing_left = 0.0
@@ -1006,57 +1102,76 @@ class GameWorld:
                 self._damage_player(player, int(42 * (1.0 - distance / (blast_radius * 0.65))) + 8)
 
     def _pickup_nearby(self, player: PlayerState) -> None:
-        closest = None
-        closest_distance = PICKUP_RADIUS
-        for item in self.loot.values():
-            if item.floor != player.floor:
-                continue
-            distance = player.pos.distance_to(item.pos)
-            if distance <= closest_distance:
-                closest = item
-                closest_distance = distance
-        if not closest:
-            return
+        with self._interaction_lock:
+            closest = None
+            closest_distance = PICKUP_RADIUS
 
-        if closest.kind == "weapon" and closest.payload in WEAPONS:
-            spec = WEAPONS[closest.payload]
-            current = player.weapons.get(spec.slot)
-            if current:
-                current.reserve_ammo += spec.magazine_size
-            else:
-                player.weapons[spec.slot] = WeaponRuntime(spec.key, spec.magazine_size, spec.magazine_size * 2)
-                player.active_slot = spec.slot
-            self._add_item(player, "ammo_pack", 1)
-        elif closest.kind == "ammo":
-            for weapon in player.weapons.values():
-                if weapon.key == closest.payload:
-                    weapon.reserve_ammo += closest.amount
-                    break
-            self._add_item(player, "ammo_pack", max(1, closest.amount // 12))
-        elif closest.kind == "armor" and closest.payload in ARMORS:
-            armor_item = "light_torso"
-            self._add_item(player, armor_item, 1)
-        elif closest.kind == "medkit":
-            player.medkits += closest.amount
-            self._add_item(player, "medicine", closest.amount)
-        elif closest.kind == "item" and closest.payload in ITEMS:
-            if not self._add_item(player, closest.payload, closest.amount):
+            # Create snapshot of loot to avoid modification during iteration
+            loot_snapshot = list(self.loot.values())
+
+            for item in loot_snapshot:
+                # Skip if item was already removed
+                if item.id not in self.loot:
+                    continue
+
+                if item.floor != player.floor:
+                    continue
+
+                distance = player.pos.distance_to(item.pos)
+                if distance <= closest_distance:
+                    closest = item
+                    closest_distance = distance
+
+            if not closest or closest.id not in self.loot:
                 return
 
-        self.loot.pop(closest.id, None)
+            # Process pickup in thread-safe manner
+            if closest.kind == "weapon" and closest.payload in WEAPONS:
+                spec = WEAPONS[closest.payload]
+                current = player.weapons.get(spec.slot)
+                if current:
+                    current.reserve_ammo += spec.magazine_size
+                else:
+                    player.weapons[spec.slot] = WeaponRuntime(spec.key, spec.magazine_size, spec.magazine_size * 2)
+                    player.active_slot = spec.slot
+                self._add_item(player, "ammo_pack", 1)
+            elif closest.kind == "ammo":
+                for weapon in player.weapons.values():
+                    if weapon.key == closest.payload:
+                        weapon.reserve_ammo += closest.amount
+                        break
+                self._add_item(player, "ammo_pack", max(1, closest.amount // 12))
+            elif closest.kind == "armor" and closest.payload in ARMORS:
+                armor_item = "light_torso"
+                self._add_item(player, armor_item, 1)
+            elif closest.kind == "medkit":
+                player.medkits += closest.amount
+                self._add_item(player, "medicine", closest.amount)
+            elif closest.kind == "item" and closest.payload in ITEMS:
+                if not self._add_item(player, closest.payload, closest.amount):
+                    return
+
+            # Remove the item only if it still exists
+            if closest.id in self.loot:
+                self.loot.pop(closest.id, None)
 
     def _interact(self, player: PlayerState) -> bool:
-        door = nearest_door(self.buildings, player.pos, INTERACT_RADIUS, player.floor)
-        if door:
-            door.open = not door.open
-            return True
-        building = nearest_stairs(self.buildings, player.pos, INTERACT_RADIUS)
-        if building and building.bounds.contains(player.pos):
-            player.floor += 1
-            if player.floor > building.max_floor:
-                player.floor = building.min_floor
-            player.inside_building = building.id
-            return True
+        with self._interaction_lock:
+            # Door interaction
+            door = nearest_door(self.buildings, player.pos, INTERACT_RADIUS, player.floor)
+            if door:
+                door.open = not door.open
+                return True
+
+            # Stairs interaction
+            building = nearest_stairs(self.buildings, player.pos, INTERACT_RADIUS)
+            if building and building.bounds.contains(player.pos):
+                player.floor += 1
+                if player.floor > building.max_floor:
+                    player.floor = building.min_floor
+                player.inside_building = building.id
+                return True
+
         return False
 
     def spawn_zombie(self, kind: str | None = None) -> ZombieState:

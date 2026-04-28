@@ -4,6 +4,8 @@ import json
 import math
 import threading
 import time
+import queue
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -118,6 +120,23 @@ class GameApp:
         self.selected_server = 0
         self._last_ping_refresh = 0.0
         self._pinging = False
+
+        # Multithreading components
+        self._render_lock = threading.RLock()  # Recursive lock for rendering operations
+        self._game_state_lock = threading.RLock()  # Lock for game state access
+        self._render_queue = queue.Queue(maxsize=2)  # Queue for render data
+        self._current_snapshot: WorldSnapshot | None = None
+        self._render_thread: threading.Thread | None = None
+        self._game_thread: threading.Thread | None = None
+        self._bot_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="BotAI")
+        self._threads_running = threading.Event()
+        self._render_fps = 60  # Target render FPS
+        self._logic_fps = 60   # Target logic FPS
+
+        # Input responsiveness improvements
+        self._input_queue = queue.Queue(maxsize=10)  # Queue for reliable input processing
+        self._last_input_time = 0.0  # Track input timing for responsiveness
+
         # Create responsive menu buttons with proper centering
         self._menu_buttons = self._create_menu_buttons()
 
@@ -201,13 +220,120 @@ class GameApp:
         return self.tr(f"recipe.{key}") if self.tr(f"recipe.{key}") != f"recipe.{key}" else RECIPES[key].title
 
     def run(self) -> None:
+        """Main application loop with multithreading support"""
+        try:
+            # Start multithreading for game states
+            if self.state in {"single", "online_game"}:
+                self._start_threaded_mode()
+            else:
+                self._run_single_threaded()
+        finally:
+            self._cleanup_threads()
+            self.online.close()
+            pygame.quit()
+
+    def _run_single_threaded(self) -> None:
+        """Single-threaded mode for menus and non-game states"""
         while self.running:
             dt = self.clock.tick(FPS) / 1000.0
             self._handle_events()
+
+            # Switch to threaded mode when entering game
+            if self.state in {"single", "online_game"}:
+                self._start_threaded_mode()
+                return
+
             self._update(dt)
             self._draw()
-        self.online.close()
-        pygame.quit()
+
+    def _start_threaded_mode(self) -> None:
+        """Start multithreaded mode for game states"""
+        self._threads_running.set()
+
+        # Start rendering thread
+        self._render_thread = threading.Thread(
+            target=self._render_loop, 
+            name="RenderThread", 
+            daemon=True
+        )
+        self._render_thread.start()
+
+        # Start game logic thread for single player mode
+        if self.state == "single":
+            self._game_thread = threading.Thread(
+                target=self._game_logic_loop, 
+                name="GameLogicThread", 
+                daemon=True
+            )
+            self._game_thread.start()
+
+        # Main thread handles events and coordination
+        self._main_event_loop()
+
+    def _main_event_loop(self) -> None:
+        """Main thread event handling loop"""
+        clock = pygame.time.Clock()
+        while self.running and self.state in {"single", "online_game"}:
+            clock.tick(120)  # High frequency for responsive input
+            self._handle_events()
+
+            # Switch back to single-threaded mode when leaving game
+            if self.state not in {"single", "online_game"}:
+                self._cleanup_threads()
+                self._run_single_threaded()
+                return
+
+    def _render_loop(self) -> None:
+        """Dedicated rendering thread"""
+        clock = pygame.time.Clock()
+        while self._threads_running.is_set() and self.running:
+            try:
+                clock.tick(self._render_fps)
+
+                with self._render_lock:
+                    # Get latest game state snapshot
+                    with self._game_state_lock:
+                        if self.state in {"single", "online_game"}:
+                            snapshot = self._snapshot()
+                            if snapshot:
+                                self._current_snapshot = snapshot
+
+                    # Perform rendering
+                    self._draw_threaded()
+
+            except Exception as e:
+                print(f"Render thread error: {e}")
+                break
+
+    def _game_logic_loop(self) -> None:
+        """Dedicated game logic thread for single player"""
+        clock = pygame.time.Clock()
+        while self._threads_running.is_set() and self.running and self.state == "single":
+            try:
+                dt = clock.tick(self._logic_fps) / 1000.0
+
+                with self._game_state_lock:
+                    self._update_game_logic(dt)
+
+            except Exception as e:
+                print(f"Game logic thread error: {e}")
+                break
+
+    def _cleanup_threads(self) -> None:
+        """Clean up all threads"""
+        self._threads_running.clear()
+
+        if self._render_thread and self._render_thread.is_alive():
+            self._render_thread.join(timeout=1.0)
+
+        if self._game_thread and self._game_thread.is_alive():
+            self._game_thread.join(timeout=1.0)
+
+        self._bot_executor.shutdown(wait=False)
+
+        # Clean up game world thread pool
+        if self.world:
+            self.world.cleanup()
 
     def _handle_events(self) -> None:
         for event in pygame.event.get():
@@ -259,11 +385,17 @@ class GameApp:
                 self.drag_source = None
         elif key == pygame.K_r:
             self.pending_reload = True
+            # Queue critical action for immediate processing
+            self._queue_critical_action("reload")
         elif key == pygame.K_e:
             self.pending_pickup = True
+            # Queue critical action for immediate processing
+            self._queue_critical_action("pickup")
         elif key == pygame.K_f:
             self.pending_interact = True
             self.pending_toggle_utility = True
+            # Queue critical action for immediate processing
+            self._queue_critical_action("interact")
         elif key == pygame.K_SPACE:
             self.pending_respawn = True
         elif key == pygame.K_g:
@@ -477,6 +609,130 @@ class GameApp:
             self.online.send_input(command)
             self._clear_transient_inputs()
         self._update_damage_feedback(dt)
+
+    def _update_game_logic(self, dt: float) -> None:
+        """Thread-safe game logic update for single player mode"""
+        if self.state == "single" and self.world and self.local_player_id:
+            # Process any queued inputs first for better responsiveness
+            self._process_queued_inputs()
+
+            if self.settings_open or self.backpack_open or self.craft_open or self.weapon_custom_open:
+                if self.pending_inventory_action or self.pending_craft_key or self.pending_repair_slot:
+                    command = self._build_input(self.local_player_id)
+                    self.world.set_input(command)
+                    self.world.update(0.0)
+                    self._clear_transient_inputs()
+                self._update_damage_feedback(dt)
+                return
+
+            # Build and apply input command
+            command = self._build_input(self.local_player_id)
+            self.world.set_input(command)
+
+            # Update world with higher frequency for critical actions
+            if command.shooting or command.pickup or command.interact:
+                # Process critical actions immediately with smaller time steps
+                sub_steps = 2
+                sub_dt = dt / sub_steps
+                for _ in range(sub_steps):
+                    self.world.update(sub_dt)
+            else:
+                self.world.update(dt)
+
+            self._clear_transient_inputs()
+        self._update_damage_feedback(dt)
+
+    def _process_queued_inputs(self) -> None:
+        """Process any queued inputs for better responsiveness"""
+        try:
+            while not self._input_queue.empty():
+                input_data = self._input_queue.get_nowait()
+                # Apply queued input immediately
+                if input_data.get("type") == "critical_action":
+                    action = input_data.get("action")
+                    if action == "pickup":
+                        self.pending_pickup = True
+                    elif action == "interact":
+                        self.pending_interact = True
+                    elif action == "reload":
+                        self.pending_reload = True
+        except queue.Empty:
+            pass
+
+    def _queue_critical_action(self, action: str) -> None:
+        """Queue a critical action for immediate processing"""
+        try:
+            current_time = time.time()
+            # Avoid duplicate actions within a short time frame
+            if current_time - self._last_input_time > 0.1:  # 25ms debounce for better responsiveness
+                self._input_queue.put_nowait({
+                    "type": "critical_action",
+                    "action": action,
+                    "timestamp": current_time
+                })
+                self._last_input_time = current_time
+        except queue.Full:
+            # If queue is full, process it immediately
+            self._process_queued_inputs()
+            try:
+                self._input_queue.put_nowait({
+                    "type": "critical_action",
+                    "action": action,
+                    "timestamp": time.time()
+                })
+            except queue.Full:
+                pass  # Skip if still full
+
+    def _draw_threaded(self) -> None:
+        """Thread-safe rendering method"""
+        if self.state == "menu":
+            self._draw_menu()
+        elif self.state == "options":
+            self._draw_options_menu()
+        elif self.state == "servers":
+            self._draw_servers()
+        elif self.state in {"single", "online_game"}:
+            self._draw_game_threaded()
+        pygame.display.flip()
+
+    def _draw_game_threaded(self) -> None:
+        """Thread-safe game rendering using cached snapshot"""
+        snapshot = self._current_snapshot
+        player = self._local_player(snapshot) if snapshot else None
+        camera = self._camera(player)
+        self.screen.fill(BG)
+        self._draw_world_background(camera)
+        if snapshot:
+            self._draw_tunnels(snapshot, camera, player)
+            self._draw_buildings(snapshot, camera, player)
+            if player and self.settings["noise_radius"]:
+                self._draw_noise_radius(player, camera)
+            self._draw_loot(snapshot, camera)
+            self._draw_projectiles(snapshot, camera)
+            self._draw_grenades(snapshot, camera)
+            self._draw_poison(snapshot, camera)
+            self._draw_zombies(snapshot, camera)
+            self._draw_players(snapshot, camera)
+            self._draw_weapon_utilities(snapshot, camera, player)
+            if player:
+                self._draw_tunnel_darkness(player, camera)
+            if player:
+                self._draw_damage_feedback(player)
+            self._draw_hud(snapshot, player)
+            self._draw_minimap(snapshot, player)
+            self._draw_context_prompt(snapshot, player, camera)
+            if pygame.key.get_pressed()[pygame.K_TAB]:
+                self._draw_scoreboard(snapshot)
+            if player and not player.alive:
+                self._draw_death_overlay()
+            if self.backpack_open and player:
+                self._draw_backpack(player)
+            if self.craft_open and player:
+                self._draw_crafting(player)
+            if self.settings_open:
+                self._draw_settings()
+        if self.online.error:
+            self._draw_text(self.online.error, 26, SCREEN_H - 34, RED)
 
     def _update_damage_feedback(self, dt: float) -> None:
         self.damage_flash = max(0.0, self.damage_flash - dt * 1.9)
