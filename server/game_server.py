@@ -33,12 +33,15 @@ class GameServer:
         self._running.set()
         sockets = ", ".join(str(sock.getsockname()) for sock in self._server.sockets or [])
         print(f"Neon Outbreak server listening on {sockets} [{self.difficulty_key}]")
-        async with self._server:
-            await asyncio.gather(
-                self._server.serve_forever(),
-                self._tick_loop(),
-                self._snapshot_loop(),
-            )
+        try:
+            async with self._server:
+                await asyncio.gather(
+                    self._server.serve_forever(),
+                    self._tick_loop(),
+                    self._snapshot_loop(),
+                )
+        finally:
+            self.world.close()
 
     async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         player_id: str | None = None

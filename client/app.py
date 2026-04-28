@@ -242,6 +242,8 @@ class GameApp:
             self._handle_events()
             self._update(dt)
             self._draw()
+        if self.world:
+            self.world.close()
         self.online.close()
         pygame.quit()
 
@@ -695,6 +697,8 @@ class GameApp:
 
     def _start_single_player(self) -> None:
         self.online.close()
+        if self.world:
+            self.world.close()
         difficulty = load_difficulty(self.difficulty_key)
         density = self.bot_density_profiles[self.bot_density]
         initial_zombies = max(1, int(round(difficulty.initial_zombies * density)))
@@ -726,6 +730,8 @@ class GameApp:
         entry = self.server_entries[self.selected_server]
         try:
             self.online.connect(entry.host, entry.port, self.player_name)
+            if self.world:
+                self.world.close()
             self.world = None
             self.inventory_open = False
             self.backpack_open = False
@@ -736,6 +742,9 @@ class GameApp:
 
     def _back_to_menu(self) -> None:
         self.online.close()
+        if self.world:
+            self.world.close()
+            self.world = None
         self.state = "menu"
         self.inventory_open = False
         self.backpack_open = False
@@ -774,7 +783,7 @@ class GameApp:
         if self.state == "single" and self.world:
             return self.world.snapshot()
         if self.state == "online_game":
-            return self.online.latest_snapshot
+            return self.online.snapshot()
         return None
 
     def _local_player(self, snapshot: WorldSnapshot | None) -> PlayerState | None:
