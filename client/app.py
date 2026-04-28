@@ -24,6 +24,8 @@ from shared.weapon_modules import WEAPON_MODULES, WEAPON_MODULE_SLOTS
 
 SCREEN_W = 1280
 SCREEN_H = 760
+MIN_WINDOW_W = 960
+MIN_WINDOW_H = 570
 FPS = 60
 ROOT = Path(__file__).resolve().parents[1]
 ICON_MAPPING_PATH = ROOT / "configs" / "icon_mapping.json"
@@ -80,7 +82,13 @@ class GameApp:
     def __init__(self) -> None:
         pygame.init()
         pygame.display.set_caption("Neon Outbreak")
-        self.screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))
+        self.fullscreen = False
+        self.windowed_size = (SCREEN_W, SCREEN_H)
+        self.display = pygame.display.set_mode(self.windowed_size, pygame.RESIZABLE)
+        self.screen = pygame.Surface((SCREEN_W, SCREEN_H)).convert()
+        self.render_rect = pygame.Rect(0, 0, SCREEN_W, SCREEN_H)
+        self.render_scale = 1.0
+        self._update_display_transform()
         self.clock = pygame.time.Clock()
         self.font = pygame.font.SysFont("segoeui", 18)
         self.small = pygame.font.SysFont("segoeui", 14)
@@ -127,6 +135,7 @@ class GameApp:
             "ai_reactions": True,
             "health_bars": True,
             "noise_radius": True,
+            "fullscreen": False,
         }
         self.bot_density = "normal"
         self.bot_density_profiles = {
@@ -236,10 +245,62 @@ class GameApp:
         self.online.close()
         pygame.quit()
 
+    def _set_display_mode(self, fullscreen: bool) -> None:
+        if fullscreen:
+            desktop_sizes = pygame.display.get_desktop_sizes() if hasattr(pygame.display, "get_desktop_sizes") else []
+            if desktop_sizes:
+                size = desktop_sizes[0]
+            else:
+                info = pygame.display.Info()
+                size = (max(1, info.current_w), max(1, info.current_h))
+            self.display = pygame.display.set_mode(size, pygame.FULLSCREEN)
+        else:
+            width = max(MIN_WINDOW_W, int(self.windowed_size[0]))
+            height = max(MIN_WINDOW_H, int(self.windowed_size[1]))
+            self.windowed_size = (width, height)
+            self.display = pygame.display.set_mode(self.windowed_size, pygame.RESIZABLE)
+        self.fullscreen = fullscreen
+        self.settings["fullscreen"] = fullscreen
+        self._update_display_transform()
+
+    def _toggle_fullscreen(self) -> None:
+        self._set_display_mode(not self.fullscreen)
+
+    def _update_display_transform(self) -> None:
+        display_w, display_h = self.display.get_size()
+        scale = min(display_w / SCREEN_W, display_h / SCREEN_H)
+        self.render_scale = max(0.1, scale)
+        render_w = max(1, int(SCREEN_W * self.render_scale))
+        render_h = max(1, int(SCREEN_H * self.render_scale))
+        self.render_rect = pygame.Rect((display_w - render_w) // 2, (display_h - render_h) // 2, render_w, render_h)
+
+    def _display_to_screen(self, pos: tuple[int, int]) -> tuple[int, int]:
+        x = int((pos[0] - self.render_rect.x) / self.render_scale)
+        y = int((pos[1] - self.render_rect.y) / self.render_scale)
+        return x, y
+
+    def _mouse_pos(self) -> tuple[int, int]:
+        return self._display_to_screen(pygame.mouse.get_pos())
+
+    def _present(self) -> None:
+        self.display.fill((0, 0, 0))
+        if self.render_rect.size == (SCREEN_W, SCREEN_H):
+            self.display.blit(self.screen, self.render_rect)
+        else:
+            scaled = pygame.transform.smoothscale(self.screen, self.render_rect.size)
+            self.display.blit(scaled, self.render_rect)
+        pygame.display.flip()
+
     def _handle_events(self) -> None:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.running = False
+            elif event.type == pygame.VIDEORESIZE and not self.fullscreen:
+                width = max(MIN_WINDOW_W, int(event.w))
+                height = max(MIN_WINDOW_H, int(event.h))
+                self.windowed_size = (width, height)
+                self.display = pygame.display.set_mode(self.windowed_size, pygame.RESIZABLE)
+                self._update_display_transform()
             elif event.type == pygame.KEYDOWN:
                 self._handle_keydown(event.key)
             elif event.type == pygame.MOUSEBUTTONDOWN:
@@ -306,7 +367,7 @@ class GameApp:
             self.pending_slot = "0"
 
     def _handle_mouse_down(self, event: pygame.event.Event) -> None:
-        pos = event.pos
+        pos = self._display_to_screen(event.pos)
         if self.craft_open and event.button in (4, 5):
             self._scroll_crafting(-1 if event.button == 4 else 1)
             return
@@ -341,19 +402,20 @@ class GameApp:
     def _handle_mouse_up(self, event: pygame.event.Event) -> None:
         if event.button != 1:
             return
+        pos = self._display_to_screen(event.pos)
         if self.settings_open:
-            self._handle_settings_click(event.pos)
+            self._handle_settings_click(pos)
             return
         if self.craft_open:
-            self._handle_craft_click(event.pos)
+            self._handle_craft_click(pos)
             return
         if self.backpack_open and self.drag_source:
             snapshot = self._snapshot()
             player = self._local_player(snapshot) if snapshot else None
-            target = self._inventory_target_at(event.pos, player)
+            target = self._inventory_target_at(pos, player)
             drop_rect = self._drop_rect()
-            outside_panel = not self._backpack_panel_rect().collidepoint(event.pos)
-            should_drop = bool(self._dragged_payload(player) and (drop_rect.collidepoint(event.pos) or outside_panel))
+            outside_panel = not self._backpack_panel_rect().collidepoint(pos)
+            should_drop = bool(self._dragged_payload(player) and (drop_rect.collidepoint(pos) or outside_panel))
             if target:
                 if target["source"] == "module_return" and self.drag_source["source"] == "weapon_module":
                     self.pending_inventory_action = {
@@ -435,22 +497,29 @@ class GameApp:
                 return
         options = list(self.settings)
         start_y, step_y = self._settings_grid()
+        panel = self._settings_panel_rect()
+        option_width = 400
+        option_height = 40
+        option_x = panel.x + (panel.w - option_width) // 2
         for index, key in enumerate(options):
-            rect = pygame.Rect(478, start_y + index * step_y, 326, 40)
+            rect = pygame.Rect(option_x, start_y + index * step_y, option_width, option_height)
             if rect.collidepoint(pos):
-                self.settings[key] = not self.settings[key]
+                if key == "fullscreen":
+                    self._toggle_fullscreen()
+                else:
+                    self.settings[key] = not self.settings[key]
                 return
-        density_rect = pygame.Rect(478, start_y + len(options) * step_y, 326, 40)
+        density_rect = pygame.Rect(option_x, start_y + len(options) * step_y, option_width, option_height)
         if density_rect.collidepoint(pos):
             order = ["low", "normal", "high"]
             self.bot_density = order[(order.index(self.bot_density) + 1) % len(order)]
             return
-        difficulty_rect = pygame.Rect(478, start_y + (len(options) + 1) * step_y, 326, 40)
+        difficulty_rect = pygame.Rect(option_x, start_y + (len(options) + 1) * step_y, option_width, option_height)
         if difficulty_rect.collidepoint(pos):
             index = self.difficulty_options.index(self.difficulty_key)
             self.difficulty_key = self.difficulty_options[(index + 1) % len(self.difficulty_options)]
             return
-        language_rect = pygame.Rect(478, start_y + (len(options) + 2) * step_y, 326, 40)
+        language_rect = pygame.Rect(option_x, start_y + (len(options) + 2) * step_y, option_width, option_height)
         if language_rect.collidepoint(pos):
             languages = sorted(self.locales)
             self.language = languages[(languages.index(self.language) + 1) % len(languages)]
@@ -725,7 +794,7 @@ class GameApp:
         )
 
     def _mouse_world(self, player: PlayerState | None) -> Vec2:
-        mx, my = pygame.mouse.get_pos()
+        mx, my = self._mouse_pos()
         camera = self._camera(player)
         zoom = max(0.1, self.camera_zoom)
         return Vec2(mx / zoom + camera.x, my / zoom + camera.y)
@@ -755,7 +824,7 @@ class GameApp:
             self._draw_servers()
         elif self.state in {"single", "online_game"}:
             self._draw_game()
-        pygame.display.flip()
+        self._present()
 
     def _draw_menu(self) -> None:
         self.screen.fill(BG)
@@ -777,7 +846,7 @@ class GameApp:
         self._draw_text_fit(self.tr("menu.caption"), pygame.Rect(panel.x + 30, panel.y + 140, panel.w - 60, 20), MUTED, self.small, center=True)
 
         for button in self._menu_buttons:
-            self._draw_button(button.rect, self.tr(button.label), button.hovered(pygame.mouse.get_pos()))
+            self._draw_button(button.rect, self.tr(button.label), button.hovered(self._mouse_pos()))
         self._draw_menu_showcase()
 
     def _draw_menu_showcase(self) -> None:
@@ -1555,7 +1624,7 @@ class GameApp:
                 self._draw_item(item.key, item.amount, rect, item.rarity)
 
         drop = self._drop_rect()
-        drop_hovered = bool(self.drag_source and drop.collidepoint(pygame.mouse.get_pos()))
+        drop_hovered = bool(self.drag_source and drop.collidepoint(self._mouse_pos()))
         customize = self._customize_button_rect()
         pygame.draw.rect(self.screen, (60, 22, 30), drop, border_radius=8)
         pygame.draw.rect(self.screen, YELLOW if drop_hovered else RED, drop, 2, border_radius=8)
@@ -1651,7 +1720,7 @@ class GameApp:
         self._draw_text_fit(self.tr("craft.rarity_odds"), pygame.Rect(odds.x + 14, odds.y + 10, 138, 18), MUTED, self.small)
         self._draw_craft_rarity_odds(odds.x + 156, odds.y + 11, "preview", "item", large=True)
 
-        mouse = pygame.mouse.get_pos()
+        mouse = self._mouse_pos()
         viewport = self._craft_viewport_rect()
         pygame.draw.rect(self.screen, (9, 13, 23), viewport.inflate(12, 12), border_radius=10)
         pygame.draw.rect(self.screen, (42, 57, 82), viewport.inflate(12, 12), 1, border_radius=10)
@@ -1886,12 +1955,13 @@ class GameApp:
             "ai_reactions": self.tr("settings.ai_reactions"),
             "health_bars": self.tr("settings.health_bars"),
             "noise_radius": self.tr("settings.noise_radius"),
+            "fullscreen": self.tr("settings.fullscreen"),
         }
         start_y, step_y = self._settings_grid()
 
         # Calculate centered positioning for settings options
-        option_width = 380
-        option_height = 44
+        option_width = 400
+        option_height = 40
         option_x = panel.x + (panel.w - option_width) // 2
 
         for index, key in enumerate(self.settings):
@@ -2023,17 +2093,16 @@ class GameApp:
         return action
 
     def _settings_panel_rect(self) -> pygame.Rect:
-        # Center the settings panel on screen
-        panel_width = 480
-        panel_height = 580
+        panel_width = 520
+        panel_height = 640
         panel_x = (SCREEN_W - panel_width) // 2
         panel_y = (SCREEN_H - panel_height) // 2
         return pygame.Rect(panel_x, panel_y, panel_width, panel_height)
 
     def _settings_grid(self) -> tuple[int, int]:
         panel = self._settings_panel_rect()
-        start_y = panel.y + 120  # Start below title and caption
-        step_y = 48  # Increased spacing for better readability
+        start_y = panel.y + 118
+        step_y = 44
         return start_y, step_y
 
     def _settings_back_rect(self) -> pygame.Rect:
@@ -2130,7 +2199,7 @@ class GameApp:
         if not payload:
             return
         key, amount, durability, rarity = payload
-        mx, my = pygame.mouse.get_pos()
+        mx, my = self._mouse_pos()
         rect = pygame.Rect(mx - 36, my - 32, 78, 66)
         glow = pygame.Surface((rect.w + 14, rect.h + 14), pygame.SRCALPHA)
         pygame.draw.rect(glow, (*rarity_color(rarity), 54), glow.get_rect(), border_radius=12)

@@ -28,6 +28,7 @@
   "settings.ai_reactions": "AI reaction labels",
   "settings.health_bars": "Health bars",
   "settings.noise_radius": "Player noise radius",
+  "settings.fullscreen": "Fullscreen",
   "settings.bot_density": "Bot density",
   "settings.difficulty": "Difficulty",
   "settings.language": "Language",
