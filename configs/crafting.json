@@ -1,0 +1,35 @@
+{
+  "rarity_weights": {
+    "common": 68,
+    "uncommon": 22,
+    "rare": 8,
+    "legendary": 2
+  },
+  "kind_overrides": {
+    "armor": {
+      "common": 54,
+      "uncommon": 28,
+      "rare": 14,
+      "legendary": 4
+    },
+    "weapon_module": {
+      "common": 60,
+      "uncommon": 26,
+      "rare": 11,
+      "legendary": 3
+    },
+    "grenade": {
+      "common": 74,
+      "uncommon": 18,
+      "rare": 6,
+      "legendary": 2
+    },
+    "mine": {
+      "common": 70,
+      "uncommon": 20,
+      "rare": 8,
+      "legendary": 2
+    }
+  },
+  "recipe_overrides": {}
+}

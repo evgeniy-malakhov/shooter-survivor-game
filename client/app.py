@@ -11,6 +11,7 @@ import pygame
 
 from client.network import OnlineClient, ping_server
 from shared.constants import ARMORS, MAP_HEIGHT, MAP_WIDTH, SLOTS, WEAPONS, ZOMBIES
+from shared.crafting import craft_rarity_chances
 from shared.difficulty import DIFFICULTY_KEYS, load_difficulty
 from shared.explosives import GRENADE_SPECS, DEFAULT_GRENADE
 from shared.items import EQUIPMENT_SLOTS, ITEMS, RECIPES
@@ -435,10 +436,7 @@ class GameApp:
 
     def _handle_craft_click(self, pos: tuple[int, int]) -> None:
         for index, recipe_key in enumerate(RECIPES):
-            col = index % 3
-            row = index // 3
-            rect = pygame.Rect(342 + col * 204, 190 + row * 68, 188, 58)
-            if rect.collidepoint(pos):
+            if self._craft_recipe_rect(index).collidepoint(pos):
                 self.pending_craft_key = recipe_key
 
     def _handle_weapon_custom_click(self, pos: tuple[int, int], player: PlayerState | None) -> bool:
@@ -1546,36 +1544,114 @@ class GameApp:
         if amount > 1:
             self._draw_text(str(amount), rect.right - 26, rect.bottom - 36, YELLOW, self.small)
 
+    def _craft_panel_rect(self) -> pygame.Rect:
+        return pygame.Rect(126, 56, 1028, 648)
+
+    def _craft_recipe_rect(self, index: int) -> pygame.Rect:
+        panel = self._craft_panel_rect()
+        card_w = 226
+        card_h = 88
+        gap = 14
+        col = index % 4
+        row = index // 4
+        return pygame.Rect(panel.x + 42 + col * (card_w + gap), panel.y + 126 + row * (card_h + gap), card_w, card_h)
+
+    def _recipe_result_kind(self, recipe_key: str) -> str:
+        recipe = RECIPES[recipe_key]
+        result_key, _ = recipe.result
+        if result_key in WEAPONS:
+            return "weapon"
+        spec = ITEMS.get(result_key)
+        return spec.kind if spec else "item"
+
     def _draw_crafting(self, player: PlayerState) -> None:
         overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
-        overlay.fill((2, 5, 12, 176))
+        overlay.fill((2, 5, 12, 190))
         self.screen.blit(overlay, (0, 0))
-        panel = pygame.Rect(300, 74, 680, 622)
+        panel = self._craft_panel_rect()
         pygame.draw.rect(self.screen, PANEL, panel, border_radius=10)
+        pygame.draw.rect(self.screen, (44, 68, 77), panel.inflate(8, 8), 1, border_radius=12)
         pygame.draw.rect(self.screen, GREEN, panel, 2, border_radius=10)
         self._draw_text(self.tr("craft.title"), panel.x + 34, panel.y + 24, TEXT, self.big)
         self._draw_text(self.tr("craft.caption"), panel.x + 38, panel.y + 90, MUTED, self.small)
+        odds = pygame.Rect(panel.right - 438, panel.y + 28, 392, 64)
+        pygame.draw.rect(self.screen, (12, 18, 30), odds, border_radius=9)
+        pygame.draw.rect(self.screen, (55, 74, 102), odds, 1, border_radius=9)
+        self._draw_text_fit(self.tr("craft.rarity_odds"), pygame.Rect(odds.x + 14, odds.y + 10, 138, 18), MUTED, self.small)
+        self._draw_craft_rarity_odds(odds.x + 156, odds.y + 11, "preview", "item", large=True)
+
+        mouse = pygame.mouse.get_pos()
         for index, recipe in enumerate(RECIPES.values()):
-            col = index % 3
-            row = index // 3
-            rect = pygame.Rect(panel.x + 42 + col * 204, panel.y + 116 + row * 68, 188, 58)
-            can_craft = all(self._inventory_count(player, key) >= amount for key, amount in recipe.requires.items())
-            pygame.draw.rect(self.screen, PANEL_2 if can_craft else (18, 22, 33), rect, border_radius=8)
-            pygame.draw.rect(self.screen, GREEN if can_craft else (66, 72, 88), rect, 2 if can_craft else 1, border_radius=8)
-            result_key, result_amount = recipe.result
-            self._draw_text_fit(f"{self.recipe_title(recipe.key)} x{result_amount}", pygame.Rect(rect.x + 10, rect.y + 7, rect.w - 20, 18), TEXT, self.small)
-            req_x = rect.x + 14
-            req_y = rect.y + 30
-            for key, amount in recipe.requires.items():
-                have = self._inventory_count(player, key)
-                color = GREEN if have >= amount else RED
-                part = f"{self.item_title(key)} {have}/{amount}"
-                label_w = min(92, max(58, len(part) * 6))
-                if req_x + label_w > rect.right - 10:
-                    req_x = rect.x + 14
-                    req_y += 13
-                self._draw_text_fit(part, pygame.Rect(req_x, req_y, label_w, 13), color, self.small)
-                req_x += label_w + 8
+            self._draw_craft_card(player, recipe.key, self._craft_recipe_rect(index), mouse)
+
+    def _draw_craft_card(self, player: PlayerState, recipe_key: str, rect: pygame.Rect, mouse: tuple[int, int]) -> None:
+        recipe = RECIPES[recipe_key]
+        result_key, result_amount = recipe.result
+        result_kind = self._recipe_result_kind(recipe_key)
+        can_craft = all(self._inventory_count(player, key) >= amount for key, amount in recipe.requires.items())
+        hovered = rect.collidepoint(mouse)
+        accent = GREEN if can_craft else (96, 108, 132)
+        if can_craft or hovered:
+            pulse = (math.sin(time.time() * 5.0) + 1.0) * 0.5
+            glow_rect = rect.inflate(14, 14)
+            glow = pygame.Surface(glow_rect.size, pygame.SRCALPHA)
+            pygame.draw.rect(glow, (*accent, int(26 + pulse * 30)), glow.get_rect(), border_radius=12)
+            self.screen.blit(glow, glow_rect)
+        pygame.draw.rect(self.screen, PANEL_2 if can_craft else (15, 19, 30), rect, border_radius=9)
+        pygame.draw.rect(self.screen, accent, rect, 2 if can_craft else 1, border_radius=9)
+        pygame.draw.rect(self.screen, (255, 255, 255, 16 if can_craft else 6), rect.inflate(-8, -8), 1, border_radius=7)
+        if not can_craft:
+            shade = pygame.Surface(rect.size, pygame.SRCALPHA)
+            shade.fill((0, 0, 0, 46))
+            self.screen.blit(shade, rect)
+
+        result_rect = pygame.Rect(rect.x + 12, rect.y + 14, 54, 54)
+        result_color = rarity_color("uncommon") if result_kind in {"armor", "weapon_module"} else self._icon_color(result_key)
+        pygame.draw.rect(self.screen, (7, 11, 19), result_rect, border_radius=8)
+        pygame.draw.rect(self.screen, result_color, result_rect, 2, border_radius=8)
+        if not self._draw_item_icon(result_key, result_rect.inflate(-12, -12), aura=False):
+            pygame.draw.circle(self.screen, result_color, result_rect.center, 15)
+        if result_amount > 1:
+            self._draw_text(str(result_amount), result_rect.right - 14, result_rect.bottom - 18, YELLOW, self.small)
+
+        title_color = TEXT if can_craft else MUTED
+        self._draw_text_fit(self.recipe_title(recipe.key), pygame.Rect(rect.x + 76, rect.y + 9, rect.w - 88, 18), title_color, self.small)
+        self._draw_craft_rarity_odds(rect.x + 76, rect.y + 31, recipe.key, result_kind)
+
+        req_x = rect.x + 76
+        req_y = rect.y + 53
+        for index, (key, amount) in enumerate(recipe.requires.items()):
+            have = self._inventory_count(player, key)
+            filled = have >= amount
+            req_rect = pygame.Rect(req_x + index * 36, req_y, 32, 28)
+            pygame.draw.rect(self.screen, (7, 11, 19), req_rect, border_radius=6)
+            pygame.draw.rect(self.screen, GREEN if filled else RED, req_rect, 1, border_radius=6)
+            if not self._draw_item_icon(key, pygame.Rect(req_rect.x + 5, req_rect.y + 3, 18, 18), aura=False, shadow=False):
+                pygame.draw.circle(self.screen, GREEN if filled else RED, (req_rect.x + 14, req_rect.y + 12), 7)
+            count_color = GREEN if filled else RED
+            self._draw_text_fit(f"{min(have, 99)}/{amount}", pygame.Rect(req_rect.x + 1, req_rect.bottom - 10, req_rect.w - 2, 9), count_color, self.small, center=True)
+
+    def _draw_craft_rarity_odds(self, x: int, y: int, recipe_key: str, result_kind: str, large: bool = False) -> None:
+        chances = craft_rarity_chances(recipe_key, result_kind)
+        cursor = x
+        for rarity in RARITY_KEYS:
+            chance = chances.get(rarity, 0.0)
+            if chance <= 0:
+                continue
+            color = rarity_color(rarity)
+            icon_size = 18 if large else 12
+            chip_w = 52 if large else 34
+            chip_h = 36 if large else 16
+            chip = pygame.Rect(cursor, y, chip_w, chip_h)
+            pygame.draw.rect(self.screen, (8, 12, 20), chip, border_radius=6)
+            pygame.draw.rect(self.screen, color, chip, 1, border_radius=6)
+            self._draw_item_icon(rarity, pygame.Rect(chip.x + 5, chip.y + 4, icon_size, icon_size), aura=False, shadow=False)
+            percent = f"{chance:.0f}%"
+            if large:
+                self._draw_text_fit(percent, pygame.Rect(chip.x + 4, chip.bottom - 13, chip.w - 8, 10), color, self.small, center=True)
+            else:
+                self._draw_text_fit(percent, pygame.Rect(chip.x + 17, chip.y + 3, chip.w - 19, 10), color, self.small)
+            cursor += chip_w + (7 if large else 3)
 
     def _draw_weapon_customization(self, player: PlayerState) -> None:
         overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)

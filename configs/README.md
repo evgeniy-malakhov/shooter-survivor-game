@@ -10,6 +10,7 @@ All files in this folder are UTF-8 JSON, except this documentation file. Restart
 - `rarities.json` configures item rarity colors and bonuses.
 - `explosives.json` configures thrown grenades and placed mines.
 - `weapon_modules.json` configures laser, flashlight and magazine modules.
+- `crafting.json` configures crafted item rarity chances.
 - `backpack.json` configures the starting backpack.
 - `item_stacks.json` configures stack sizes for backpack items.
 - `icon_mapping.json` maps game ids to PNG filenames in `images/`.
@@ -52,6 +53,33 @@ Examples:
 - Rarity badges use `common`, `uncommon`, `rare` and `legendary`.
 
 When adding a new item, prefer naming the PNG exactly like the item key. Use `icon_mapping.json` only for legacy filenames, shared icons, or deliberately reused visuals.
+
+## Crafting
+
+`crafting.json` controls the rarity roll for items created at a work bench. Every crafted item receives a rarity, including consumables, tools, explosives, modules and armor.
+
+Fields:
+
+- `rarity_weights`: default craft weights for `common`, `uncommon`, `rare` and `legendary`.
+- `kind_overrides`: optional weights by resulting item kind, such as `armor`, `weapon_module`, `grenade` or `mine`.
+- `recipe_overrides`: optional weights for one exact recipe key. This has the highest priority.
+
+Example:
+
+```json
+{
+  "recipe_overrides": {
+    "heavy_torso": {
+      "common": 40,
+      "uncommon": 34,
+      "rare": 20,
+      "legendary": 6
+    }
+  }
+}
+```
+
+The work bench UI shows these configured odds directly on recipe cards with rarity icons.
 
 ## Weapons
 

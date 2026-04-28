@@ -70,6 +70,7 @@
   "backpack.customize": "Customize Weapon",
   "craft.title": "Work Bench",
   "craft.caption": "Recipes highlight when every required item is available.",
+  "craft.rarity_odds": "Quality odds",
   "scoreboard.title": "Squad Stats",
   "scoreboard.player": "Player",
   "scoreboard.total": "Total",

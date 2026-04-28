@@ -70,6 +70,7 @@
   "backpack.customize": "Модернизация оружия",
   "craft.title": "Верстак",
   "craft.caption": "Доступные рецепты подсвечены, недостающие ресурсы выделены красным.",
+  "craft.rarity_odds": "Шансы качества",
   "scoreboard.title": "Статистика отряда",
   "scoreboard.player": "Игрок",
   "scoreboard.total": "Всего",

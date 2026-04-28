@@ -25,6 +25,7 @@ from shared.constants import (
     ZOMBIES,
 )
 from shared.backpack_config import BackpackConfig, load_backpack_config
+from shared.crafting import roll_crafted_rarity
 from shared.difficulty import DifficultyConfig, load_difficulty
 from shared.explosives import GRENADE_SPECS, MINE_SPECS, DEFAULT_GRENADE, DEFAULT_MINE
 from shared.items import ITEMS, LEGACY_LOOT_TO_ITEM, RECIPES, WORLD_LOOT, HOUSE_LOOT
@@ -900,11 +901,15 @@ class GameWorld:
             return
         if any(self._count_item(player, key) < amount for key, amount in recipe.requires.items()):
             return
-        for key, amount in recipe.requires.items():
-            self._remove_items(player, key, amount)
         result_key, result_amount = recipe.result
         result_spec = ITEMS.get(result_key)
-        result_rarity = self._roll_rarity() if result_spec and result_spec.kind == "armor" else "common"
+        result_kind = result_spec.kind if result_spec else "item"
+        result_rarity = roll_crafted_rarity(self.rng, recipe.key, result_kind)
+        if not self._can_add_item(player, result_key, result_amount, result_rarity):
+            self._pickup_failed_full(player)
+            return
+        for key, amount in recipe.requires.items():
+            self._remove_items(player, key, amount)
         self._add_item(player, result_key, result_amount, rarity=result_rarity)
 
     def _repair_armor(self, player: PlayerState, slot: str) -> None:
@@ -970,6 +975,20 @@ class GameWorld:
                 remaining -= add
                 if remaining <= 0:
                     return True
+        return False
+
+    def _can_add_item(self, player: PlayerState, key: str, amount: int, rarity: str = "common") -> bool:
+        spec = ITEMS.get(key)
+        if not spec:
+            return False
+        capacity = 0
+        for item in player.backpack:
+            if item is None:
+                capacity += spec.stack_size
+            elif item.key == key and item.rarity == rarity:
+                capacity += max(0, spec.stack_size - item.amount)
+            if capacity >= amount:
+                return True
         return False
 
     def _add_weapon_to_backpack(self, player: PlayerState, weapon_key: str, rarity: str, durability: float = 100.0) -> bool:
