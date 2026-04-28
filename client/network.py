@@ -67,6 +67,16 @@ class OnlineClient:
             self.error = str(exc)
             self._running = False
 
+    def send_profile_name(self, name: str) -> None:
+        if not self._socket or not self._running:
+            return
+        try:
+            with self._lock:
+                self._socket.sendall(encode_message("profile", name=name[:18]))
+        except OSError as exc:
+            self.error = str(exc)
+            self._running = False
+
     def close(self) -> None:
         self._running = False
         if self._socket:

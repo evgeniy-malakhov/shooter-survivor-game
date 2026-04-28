@@ -29,6 +29,7 @@ MIN_WINDOW_H = 570
 FPS = 60
 ROOT = Path(__file__).resolve().parents[1]
 ICON_MAPPING_PATH = ROOT / "configs" / "icon_mapping.json"
+CLIENT_SETTINGS_PATH = ROOT / "client_settings.json"
 
 BG = (9, 12, 22)
 PANEL = (19, 25, 42)
@@ -103,7 +104,10 @@ class GameApp:
         self._last_local_health: float | None = None
         self.camera_zoom = 1.0
         self.state = "menu"
-        self.player_name = "Operator"
+        saved_settings = self._load_client_settings()
+        self.player_name = self._clean_player_name(str(saved_settings.get("player_name", "Operator")))
+        self.name_editing = False
+        self.name_input = self.player_name
         self.world: GameWorld | None = None
         self.local_player_id: str | None = None
         self.online = OnlineClient()
@@ -135,6 +139,7 @@ class GameApp:
             "ai_reactions": True,
             "health_bars": True,
             "noise_radius": True,
+            "show_zombie_count": bool(saved_settings.get("show_zombie_count", False)),
             "fullscreen": False,
         }
         self.bot_density = "normal"
@@ -177,6 +182,39 @@ class GameApp:
         for path in (ROOT / "locales").glob("*.json"):
             locales[path.stem] = json.loads(path.read_text(encoding="utf-8"))
         return locales or {"en": {}}
+
+    def _load_client_settings(self) -> dict[str, object]:
+        if not CLIENT_SETTINGS_PATH.exists():
+            return {}
+        try:
+            data = json.loads(CLIENT_SETTINGS_PATH.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _save_client_settings(self) -> None:
+        data = {
+            "player_name": self.player_name,
+            "show_zombie_count": bool(self.settings.get("show_zombie_count", False)),
+        }
+        try:
+            CLIENT_SETTINGS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError:
+            pass
+
+    def _clean_player_name(self, name: str) -> str:
+        cleaned = " ".join(name.strip().split())
+        return (cleaned or "Operator")[:18]
+
+    def _commit_player_name(self) -> None:
+        self.player_name = self._clean_player_name(self.name_input)
+        self.name_input = self.player_name
+        self.name_editing = False
+        if self.state == "single" and self.world and self.local_player_id:
+            self.world.rename_player(self.local_player_id, self.player_name)
+        elif self.state == "online_game" and self.online.player_id:
+            self.online.send_profile_name(self.player_name)
+        self._save_client_settings()
 
     def tr(self, key: str, **values: object) -> str:
         text = self.locales.get(self.language, {}).get(key) or self.locales.get("en", {}).get(key) or key
@@ -304,7 +342,7 @@ class GameApp:
                 self.display = pygame.display.set_mode(self.windowed_size, pygame.RESIZABLE)
                 self._update_display_transform()
             elif event.type == pygame.KEYDOWN:
-                self._handle_keydown(event.key)
+                self._handle_keydown(event)
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 self._handle_mouse_down(event)
             elif event.type == pygame.MOUSEBUTTONUP:
@@ -312,7 +350,19 @@ class GameApp:
             elif event.type == pygame.MOUSEWHEEL:
                 self._handle_mouse_wheel(event)
 
-    def _handle_keydown(self, key: int) -> None:
+    def _handle_keydown(self, event: pygame.event.Event) -> None:
+        key = event.key
+        if self.name_editing:
+            if key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                self._commit_player_name()
+            elif key == pygame.K_ESCAPE:
+                self.name_input = self.player_name
+                self.name_editing = False
+            elif key == pygame.K_BACKSPACE:
+                self.name_input = self.name_input[:-1]
+            elif len(self.name_input) < 18 and event.unicode and event.unicode.isprintable():
+                self.name_input += event.unicode
+            return
         if key == pygame.K_ESCAPE:
             if self.weapon_custom_open:
                 self.weapon_custom_open = False
@@ -488,15 +538,27 @@ class GameApp:
 
     def _handle_settings_click(self, pos: tuple[int, int]) -> None:
         if self.state == "options" and self._settings_back_rect().collidepoint(pos):
+            if self.name_editing:
+                self._commit_player_name()
             self.state = "menu"
             return
         if self.state in {"single", "online_game"}:
             if self._settings_resume_rect().collidepoint(pos):
+                if self.name_editing:
+                    self._commit_player_name()
                 self.settings_open = False
                 return
             if self._settings_main_menu_rect().collidepoint(pos):
+                if self.name_editing:
+                    self._commit_player_name()
                 self._back_to_menu()
                 return
+        if self._settings_name_rect().collidepoint(pos):
+            self.name_editing = True
+            self.name_input = self.player_name
+            return
+        if self.name_editing:
+            self._commit_player_name()
         options = list(self.settings)
         start_y, step_y = self._settings_grid()
         panel = self._settings_panel_rect()
@@ -510,6 +572,8 @@ class GameApp:
                     self._toggle_fullscreen()
                 else:
                     self.settings[key] = not self.settings[key]
+                    if key == "show_zombie_count":
+                        self._save_client_settings()
                 return
         density_rect = pygame.Rect(option_x, start_y + len(options) * step_y, option_width, option_height)
         if density_rect.collidepoint(pos):
@@ -929,6 +993,8 @@ class GameApp:
                 self._draw_damage_feedback(player)
             self._draw_hud(snapshot, player)
             self._draw_minimap(snapshot, player)
+            if self.settings.get("show_zombie_count", False):
+                self._draw_zombie_counter(snapshot)
             self._draw_context_prompt(snapshot, player, camera)
             if pygame.key.get_pressed()[pygame.K_TAB]:
                 self._draw_scoreboard(snapshot)
@@ -1488,6 +1554,22 @@ class GameApp:
             )
             pygame.draw.rect(self.screen, (84, 95, 118), mini, 1)
 
+    def _draw_zombie_counter(self, snapshot: WorldSnapshot) -> None:
+        size = 226 if self.minimap_big else 156
+        minimap_h = int(size * MAP_HEIGHT / MAP_WIDTH)
+        rect = pygame.Rect(SCREEN_W - size - 18, 18 + minimap_h + 12, size, 42)
+        count = len(snapshot.zombies)
+        pulse = (math.sin(time.time() * 3.6) + 1.0) * 0.5
+        bg = pygame.Surface(rect.size, pygame.SRCALPHA)
+        pygame.draw.rect(bg, (20, 13, 24, 220), bg.get_rect(), border_radius=9)
+        pygame.draw.rect(bg, (255, 91, 111, int(110 + pulse * 70)), bg.get_rect(), 2, border_radius=9)
+        self.screen.blit(bg, rect)
+        icon_rect = pygame.Rect(rect.x + 12, rect.y + 8, 26, 26)
+        if not self._draw_item_icon("dead", icon_rect, aura=False, shadow=False):
+            pygame.draw.circle(self.screen, RED, icon_rect.center, 10)
+        self._draw_text_fit(self.tr("hud.zombies"), pygame.Rect(rect.x + 44, rect.y + 7, rect.w - 96, 15), MUTED, self.small)
+        self._draw_text_fit(str(count), pygame.Rect(rect.right - 58, rect.y + 5, 42, 30), RED, self.mid, center=True)
+
     def _draw_notice(self, player: PlayerState) -> None:
         if not player.notice or player.notice_timer <= 0.0:
             return
@@ -1535,12 +1617,17 @@ class GameApp:
 
     def _draw_scoreboard(self, snapshot: WorldSnapshot) -> None:
         overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
-        overlay.fill((3, 7, 14, 190))
+        overlay.fill((4, 7, 18, 206))
         self.screen.blit(overlay, (0, 0))
         panel = pygame.Rect(250, 96, 780, 520)
-        pygame.draw.rect(self.screen, PANEL, panel, border_radius=10)
+        glow = pygame.Surface(panel.inflate(26, 26).size, pygame.SRCALPHA)
+        pygame.draw.rect(glow, (76, 225, 255, 34), glow.get_rect(), border_radius=16)
+        pygame.draw.rect(glow, (255, 91, 111, 24), glow.get_rect().inflate(-10, -10), 2, border_radius=14)
+        self.screen.blit(glow, panel.inflate(26, 26))
+        pygame.draw.rect(self.screen, (15, 20, 38), panel, border_radius=10)
         pygame.draw.rect(self.screen, CYAN, panel, 2, border_radius=10)
-        self._draw_text(self.tr("scoreboard.title"), panel.x + 34, panel.y + 28, TEXT, self.big)
+        pygame.draw.line(self.screen, PURPLE, (panel.x + 24, panel.y + 92), (panel.right - 24, panel.y + 92), 2)
+        self._draw_text(self.tr("scoreboard.title"), panel.x + 34, panel.y + 24, TEXT, self.big)
         headers = [
             self.tr("scoreboard.player"),
             self.tr("scoreboard.total"),
@@ -1552,21 +1639,38 @@ class GameApp:
         ]
         xs = [panel.x + 42, panel.x + 286, panel.x + 365, panel.x + 452, panel.x + 535, panel.x + 618, panel.x + 700]
         for x, header in zip(xs, headers):
-            self._draw_text(header, x, panel.y + 112, MUTED, self.small)
+            self._draw_text(header, x, panel.y + 112, CYAN if header == self.tr("scoreboard.total") else MUTED, self.small)
         y = panel.y + 150
         for player in sorted(snapshot.players.values(), key=lambda p: p.score, reverse=True):
-            pygame.draw.rect(self.screen, PANEL_2, pygame.Rect(panel.x + 30, y - 8, 720, 42), border_radius=6)
+            row = pygame.Rect(panel.x + 30, y - 8, 720, 42)
+            row_color = (28, 42, 66) if player.alive else (48, 20, 31)
+            border = GREEN if player.alive else RED
+            if player.id == (self.local_player_id or self.online.player_id):
+                border = CYAN
+            pygame.draw.rect(self.screen, row_color, row, border_radius=7)
+            pygame.draw.rect(self.screen, border, row, 1, border_radius=7)
+            if not player.alive:
+                self._draw_item_icon("dead", pygame.Rect(xs[0], y - 3, 24, 24), aura=False, shadow=False)
+                name_x = xs[0] + 30
+            else:
+                pygame.draw.circle(self.screen, GREEN, (xs[0] + 10, y + 9), 6)
+                name_x = xs[0] + 22
             values = [
-                player.name,
                 str(player.score),
                 str(player.kills_by_kind.get("walker", 0)),
                 str(player.kills_by_kind.get("runner", 0)),
                 str(player.kills_by_kind.get("brute", 0)),
                 str(player.kills_by_kind.get("leaper", 0)),
-                "alive" if player.alive else "dead",
+                self.tr("state.alive") if player.alive else self.tr("state.dead"),
             ]
-            for x, value in zip(xs, values):
-                color = TEXT if value != "dead" else RED
+            self._draw_text_fit(
+                f"{player.name}{'' if player.alive else ' - ' + self.tr('state.dead')}",
+                pygame.Rect(name_x, y, xs[1] - name_x - 12, 22),
+                TEXT if player.alive else RED,
+                self.font,
+            )
+            for x, value in zip(xs[1:], values):
+                color = RED if value == self.tr("state.dead") else YELLOW if x == xs[1] else TEXT
                 self._draw_text(value, x, y, color, self.font)
             y += 52
 
@@ -1964,6 +2068,7 @@ class GameApp:
             "ai_reactions": self.tr("settings.ai_reactions"),
             "health_bars": self.tr("settings.health_bars"),
             "noise_radius": self.tr("settings.noise_radius"),
+            "show_zombie_count": self.tr("settings.show_zombie_count"),
             "fullscreen": self.tr("settings.fullscreen"),
         }
         start_y, step_y = self._settings_grid()
@@ -1972,6 +2077,15 @@ class GameApp:
         option_width = 400
         option_height = 40
         option_x = panel.x + (panel.w - option_width) // 2
+
+        name_rect = self._settings_name_rect()
+        pygame.draw.rect(self.screen, (12, 18, 30), name_rect, border_radius=8)
+        pygame.draw.rect(self.screen, CYAN if self.name_editing else (58, 78, 108), name_rect, 2, border_radius=8)
+        self._draw_text_fit(self.tr("settings.player_name"), pygame.Rect(name_rect.x + 16, name_rect.y + 11, 142, 20), MUTED, self.font)
+        display_name = self.name_input if self.name_editing else self.player_name
+        if self.name_editing and int(time.time() * 2) % 2 == 0:
+            display_name += "|"
+        self._draw_text_fit(display_name, pygame.Rect(name_rect.x + 168, name_rect.y + 11, name_rect.w - 184, 20), TEXT, self.font)
 
         for index, key in enumerate(self.settings):
             rect = pygame.Rect(option_x, start_y + index * step_y, option_width, option_height)
@@ -2103,16 +2217,20 @@ class GameApp:
 
     def _settings_panel_rect(self) -> pygame.Rect:
         panel_width = 520
-        panel_height = 640
+        panel_height = 680
         panel_x = (SCREEN_W - panel_width) // 2
         panel_y = (SCREEN_H - panel_height) // 2
         return pygame.Rect(panel_x, panel_y, panel_width, panel_height)
 
     def _settings_grid(self) -> tuple[int, int]:
         panel = self._settings_panel_rect()
-        start_y = panel.y + 118
-        step_y = 44
+        start_y = panel.y + 166
+        step_y = 40
         return start_y, step_y
+
+    def _settings_name_rect(self) -> pygame.Rect:
+        panel = self._settings_panel_rect()
+        return pygame.Rect(panel.x + 60, panel.y + 116, panel.w - 120, 40)
 
     def _settings_back_rect(self) -> pygame.Rect:
         panel = self._settings_panel_rect()

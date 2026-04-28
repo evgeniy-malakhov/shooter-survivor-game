@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 import random
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -76,6 +77,7 @@ class GameWorld:
         initial_zombies: int | None = None,
         max_zombies: int | None = None,
         difficulty_key: str = "medium",
+        zombie_workers: int | None = None,
     ) -> None:
         self._lock = threading.RLock()
         self._geometry_cache_lock = threading.Lock()
@@ -102,8 +104,10 @@ class GameWorld:
         self._geometry_version = 0
         self._closed_walls_cache: dict[int, tuple[int, tuple[RectState, ...]]] = {}
         self._zombie_rngs: dict[str, random.Random] = {}
+        cpu_budget = max(1, (os.cpu_count() or 4) - 1)
+        worker_count = zombie_workers if zombie_workers is not None else min(12, cpu_budget, self.max_zombies)
         self._zombie_executor = ThreadPoolExecutor(
-            max_workers=max(1, min(96, self.max_zombies)),
+            max_workers=max(1, worker_count),
             thread_name_prefix="zombie-ai",
         )
         self._prime_map()
@@ -146,7 +150,7 @@ class GameWorld:
         player_id = player_id or self._id("p")
         player = PlayerState(
             id=player_id,
-            name=name[:18] or "Player",
+            name=_clean_player_name(name),
             pos=self._random_open_pos(centered=True),
             kills_by_kind={kind: 0 for kind in ZOMBIES},
             backpack=[None] * self.backpack_config.slots,
@@ -174,6 +178,12 @@ class GameWorld:
             self.players.pop(player_id, None)
             self.inputs.pop(player_id, None)
             self._grenade_cooldowns.pop(player_id, None)
+
+    def rename_player(self, player_id: str, name: str) -> None:
+        with self._lock:
+            player = self.players.get(player_id)
+            if player:
+                player.name = _clean_player_name(name)
 
     def set_input(self, command: InputCommand) -> None:
         with self._lock:
@@ -1758,9 +1768,17 @@ class GameWorld:
                 buildings=dict(self.buildings),
             )
 
+    def zombie_count(self) -> int:
+        with self._lock:
+            return len(self.zombies)
+
 
 def _angle_delta(a: float, b: float) -> float:
     return (b - a + math.pi) % (math.tau) - math.pi
+
+
+def _clean_player_name(name: str) -> str:
+    return "Operator" if not name.strip() else name.strip()[:18]
 
 
 def _circle_rect_intersects(pos: Vec2, radius: float, rect: RectState) -> bool:
