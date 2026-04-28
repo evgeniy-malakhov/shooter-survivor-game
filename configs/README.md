@@ -12,11 +12,12 @@ All files in this folder are UTF-8 JSON, except this documentation file. Restart
 - `weapon_modules.json` configures laser, flashlight and magazine modules.
 - `backpack.json` configures the starting backpack.
 - `item_stacks.json` configures stack sizes for backpack items.
+- `icon_mapping.json` maps game ids to PNG filenames in `images/`.
 - `difficulty/*.json` configures world difficulty presets.
 
 ## Items
 
-Item definitions live in `shared/items.py`; stack limits live in `item_stacks.json`; display names live in `locales/en.json` and `locales/ru.json`; icons are loaded from `images/` by item key or by an alias in `client/app.py`.
+Item definitions live in `shared/items.py`; stack limits live in `item_stacks.json`; display names live in `locales/en.json` and `locales/ru.json`; icons are loaded from `images/` by item key or by `icon_mapping.json`.
 
 Current items:
 
@@ -36,7 +37,21 @@ To add a new item:
 3. Add localized names in `locales/en.json` and `locales/ru.json` using `item.<key>`.
 4. Add it to `HOUSE_LOOT` or `WORLD_LOOT` in `shared/items.py` if it should spawn.
 5. Add a recipe in `RECIPES` if it should be craftable, and localize `recipe.<key>`.
-6. Add a PNG to `images/<key>.png`, or add an alias in `client/app.py` if another icon should be reused.
+6. Add a PNG to `images/<key>.png`, or add an entry to `icon_mapping.json` if another filename should be reused.
+
+## Icon Mapping
+
+`icon_mapping.json` is a simple object where each key is the game id and each value is the PNG filename without extension. The client first loads every `images/*.png` by filename, then applies this mapping as aliases.
+
+Examples:
+
+- `grenade` maps to `granade` because the current PNG filename is `granade.png`.
+- `gunpowder` maps to `gun_powder`.
+- `duct_tape` maps to `dust_type`.
+- `light_head` maps to `light_helmet`.
+- Rarity badges use `common`, `uncommon`, `rare` and `legendary`.
+
+When adding a new item, prefer naming the PNG exactly like the item key. Use `icon_mapping.json` only for legacy filenames, shared icons, or deliberately reused visuals.
 
 ## Weapons
 

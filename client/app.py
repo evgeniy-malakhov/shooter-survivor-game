@@ -16,7 +16,7 @@ from shared.explosives import GRENADE_SPECS, DEFAULT_GRENADE
 from shared.items import EQUIPMENT_SLOTS, ITEMS, RECIPES
 from shared.level import tunnel_segments
 from shared.models import BuildingState, InputCommand, LootState, PlayerState, RectState, Vec2, WorldSnapshot
-from shared.rarities import rarity_color, rarity_spec
+from shared.rarities import RARITY_KEYS, rarity_color, rarity_rank, rarity_spec
 from shared.simulation import GameWorld
 from shared.weapon_modules import WEAPON_MODULES, WEAPON_MODULE_SLOTS
 
@@ -25,6 +25,7 @@ SCREEN_W = 1280
 SCREEN_H = 760
 FPS = 60
 ROOT = Path(__file__).resolve().parents[1]
+ICON_MAPPING_PATH = ROOT / "configs" / "icon_mapping.json"
 
 BG = (9, 12, 22)
 PANEL = (19, 25, 42)
@@ -36,6 +37,21 @@ GREEN = (120, 240, 164)
 RED = (255, 91, 111)
 YELLOW = (255, 210, 112)
 PURPLE = (177, 132, 255)
+
+DEFAULT_ICON_MAPPING = {
+    "grenade": "granade",
+    "gunpowder": "gun_powder",
+    "duct_tape": "dust_type",
+    "medicine": "medkit",
+    "medkit": "medkit",
+    "ammo": "ammo_pack",
+    "armor": "light_torso",
+    "light_head": "light_helmet",
+    "light": "light_torso",
+    "medium": "medium_torso",
+    "tactical": "tactical_vest",
+    "heavy": "heavy_torso",
+}
 
 
 @dataclass(slots=True)
@@ -71,6 +87,7 @@ class GameApp:
         self.mid = pygame.font.SysFont("segoeui", 26, bold=True)
         self.language = "en"
         self.locales = self._load_locales()
+        self.icon_mapping = self._load_icon_mapping()
         self.item_images = self._load_item_images()
         self._icon_cache: dict[tuple[str, int, int], pygame.Surface] = {}
         self.damage_flash = 0.0
@@ -154,45 +171,39 @@ class GameApp:
         text = self.locales.get(self.language, {}).get(key) or self.locales.get("en", {}).get(key) or key
         return text.format(**values) if values else text
 
+    def _load_icon_mapping(self) -> dict[str, str]:
+        mapping = dict(DEFAULT_ICON_MAPPING)
+        if not ICON_MAPPING_PATH.exists():
+            return mapping
+        try:
+            raw = json.loads(ICON_MAPPING_PATH.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return mapping
+        if not isinstance(raw, dict):
+            return mapping
+        for key, value in raw.items():
+            image_key = Path(str(value)).stem
+            if image_key:
+                mapping[str(key)] = image_key
+        return mapping
+
     def _load_item_images(self) -> dict[str, pygame.Surface]:
-        aliases = {
-            "contact_grenade": "granade",
-            "grenade": "granade",
-            "heavy_grenade": "granade",
-            "mine_light": "gear",
-            "mine_standard": "scrap",
-            "mine_heavy": "ammo_pack",
-            "gunpowder": "gun_powder",
-            "medicine": "medkit",
-            "light": "shield",
-            "medium": "shield",
-            "tactical": "shield",
-            "heavy": "shield",
-            "laser_module": "circuit",
-            "flashlight_module": "plus_green",
-            "extended_mag": "ammo_pack",
-            "medium_head": "light_helmet",
-            "heavy_head": "light_helmet",
-            "light_torso": "shield",
-            "medium_torso": "shield",
-            "heavy_torso": "shield",
-            "light_arms": "shield",
-            "medium_arms": "shield",
-            "heavy_arms": "shield",
-            "light_legs": "shield",
-            "medium_legs": "shield",
-            "heavy_legs": "shield",
-        }
         images: dict[str, pygame.Surface] = {}
         image_dir = ROOT / "images"
-        for key in set(ITEMS) | set(WEAPONS) | {"heart", "shield", "light", "medium", "tactical", "heavy"}:
-            filename = aliases.get(key, key)
-            path = image_dir / f"{filename}.png"
+        for path in image_dir.glob("*.png"):
             if path.exists():
                 try:
-                    images[key] = self._load_alpha_image(path)
+                    images[path.stem] = self._load_alpha_image(path)
                 except pygame.error:
                     pass
+        for key, image_key in self.icon_mapping.items():
+            path = image_dir / f"{image_key}.png"
+            if not path.exists():
+                continue
+            try:
+                images[key] = self._load_alpha_image(path)
+            except pygame.error:
+                pass
         return images
 
     def _load_alpha_image(self, path: Path) -> pygame.Surface:
@@ -911,6 +922,52 @@ class GameApp:
         screen_rect = self._world_rect_to_screen(rect, camera)
         pygame.draw.rect(self.screen, color, screen_rect, border_radius=2)
 
+    def _loot_icon_key(self, item: LootState) -> str:
+        if item.kind == "ammo":
+            ammo_key = f"{item.payload}_ammo"
+            return ammo_key if ammo_key in self.item_images else "ammo_pack"
+        if item.kind == "medkit":
+            return "medicine"
+        if item.kind == "armor":
+            armor_key = f"{item.payload}_torso"
+            return armor_key if armor_key in ITEMS or armor_key in self.item_images else item.payload
+        return item.payload if item.kind in {"item", "weapon"} else self.icon_mapping.get(item.kind, item.kind)
+
+    def _draw_world_item_frame(
+        self,
+        center: tuple[int, int],
+        rarity: str,
+        accent: tuple[int, int, int],
+        world_time: float,
+    ) -> pygame.Rect:
+        rank = rarity_rank(rarity)
+        rarity_accent = rarity_color(rarity) if rank > 0 else accent
+        pulse = (math.sin(world_time * 4.6 + center[0] * 0.017) + 1.0) * 0.5
+        size = 42 + min(rank, 3) * 3
+        rect = pygame.Rect(0, 0, size, size)
+        rect.center = center
+        glow_rect = rect.inflate(22 + rank * 6, 22 + rank * 6)
+        glow = pygame.Surface(glow_rect.size, pygame.SRCALPHA)
+        for layer in range(3 + min(rank, 2)):
+            inset = layer * 5
+            alpha = max(8, int(42 + rank * 22 + pulse * 26) - layer * 18)
+            layer_rect = glow.get_rect().inflate(-inset, -inset)
+            pygame.draw.rect(glow, (*rarity_accent, alpha), layer_rect, 2, border_radius=10)
+        pygame.draw.rect(glow, (*accent, 24 + rank * 8), glow.get_rect().inflate(-12, -12), border_radius=9)
+        self.screen.blit(glow, glow_rect)
+
+        pygame.draw.rect(self.screen, (7, 11, 19), rect, border_radius=7)
+        pygame.draw.rect(self.screen, accent, rect, 1, border_radius=7)
+        pygame.draw.rect(self.screen, rarity_accent, rect.inflate(4, 4), 2 + (1 if rank >= 2 else 0), border_radius=8)
+        corner = 8 + rank * 2
+        width = 2 + (1 if rank >= 3 else 0)
+        for sx, sy in ((rect.left, rect.top), (rect.right, rect.top), (rect.left, rect.bottom), (rect.right, rect.bottom)):
+            x_dir = 1 if sx == rect.left else -1
+            y_dir = 1 if sy == rect.top else -1
+            pygame.draw.line(self.screen, rarity_accent, (sx, sy), (sx + corner * x_dir, sy), width)
+            pygame.draw.line(self.screen, rarity_accent, (sx, sy), (sx, sy + corner * y_dir), width)
+        return rect
+
     def _draw_loot(self, snapshot: WorldSnapshot, camera: Vec2) -> None:
         player = self._local_player(snapshot)
         colors = {"weapon": CYAN, "ammo": YELLOW, "armor": PURPLE, "medkit": GREEN, "item": TEXT}
@@ -922,22 +979,17 @@ class GameApp:
             sx, sy = self._world_to_screen(item.pos, camera)
             if -30 <= sx <= SCREEN_W + 30 and -30 <= sy <= SCREEN_H + 30:
                 color = colors.get(item.kind, TEXT)
-                icon_key = item.payload if item.kind in {"item", "weapon", "armor"} else "ammo_pack" if item.kind == "ammo" else "medicine"
+                icon_key = self._loot_icon_key(item)
                 if item.kind == "item" and item.payload in ITEMS:
                     color = ITEMS[item.payload].color
                 spec = ITEMS.get(item.payload)
                 rare_visual = item.kind in {"weapon", "armor"} or bool(spec and spec.kind == "armor")
-                if rare_visual:
+                if rare_visual and rarity_rank(item.rarity) > 0:
                     color = rarity_color(item.rarity)
-                glow = 3 + int((math.sin(snapshot.time * 5.0 + sx * 0.01) + 1) * 2)
-                glow_rect = pygame.Rect(sx - 19 - glow, sy - 19 - glow, 38 + glow * 2, 38 + glow * 2)
+                glow_rect = self._draw_world_item_frame((sx, sy), item.rarity, color, snapshot.time)
                 if rare_visual:
-                    aura = pygame.Surface((glow_rect.w + 18, glow_rect.h + 18), pygame.SRCALPHA)
-                    pygame.draw.rect(aura, (*color, 34), aura.get_rect(), border_radius=8)
-                    self.screen.blit(aura, (glow_rect.x - 9, glow_rect.y - 9))
-                pygame.draw.rect(self.screen, (*color,), glow_rect, 2, border_radius=5)
-                pygame.draw.rect(self.screen, (255, 255, 255), pygame.Rect(sx - 17, sy - 17, 34, 34), 1, border_radius=5)
-                if not self._draw_item_icon(icon_key, pygame.Rect(sx - 13, sy - 13, 26, 26)):
+                    self._draw_rarity_badge(glow_rect, item.rarity, compact=True)
+                if not self._draw_item_icon(icon_key, pygame.Rect(sx - 14, sy - 14, 28, 28), aura=False):
                     pygame.draw.circle(self.screen, color, (sx, sy), 10)
                 label = self._loot_label(item)
                 self._draw_text(label, sx + 14, sy - 11, color, self.small)
@@ -1279,9 +1331,11 @@ class GameApp:
             if weapon:
                 label = f"{slot} {self.weapon_title(weapon.key).split()[0]}"
                 self._draw_rarity_frame(rect, weapon.rarity)
+                self._draw_rarity_badge(rect, weapon.rarity, compact=True)
                 self._mini_durability(rect, weapon.durability)
             elif quick_item:
                 label = f"{slot} {self.item_title(quick_item.key).split()[0]}"
+                self._draw_rarity_badge(rect, quick_item.rarity, compact=True)
                 self._draw_item_icon(quick_item.key, pygame.Rect(rect.x + 22, rect.y + 6, 28, 28))
             self._draw_text_fit(label, rect.inflate(-10, -12), TEXT if weapon or quick_item else MUTED, self.small, center=True)
         self._draw_notice(player)
@@ -1434,6 +1488,7 @@ class GameApp:
             quick_item = player.quick_items.get(slot)
             if weapon and not self._is_dragging("weapon_slot", slot=slot):
                 self._draw_rarity_frame(rect, weapon.rarity)
+                self._draw_rarity_badge(rect, weapon.rarity, compact=True)
                 self._draw_item_icon(weapon.key, pygame.Rect(rect.x + 16, rect.y + 11, 34, 34))
                 self._mini_durability(rect, weapon.durability)
             elif quick_item and not self._is_dragging("quick_item", slot=slot):
@@ -1477,17 +1532,19 @@ class GameApp:
     def _draw_item(self, key: str, amount: int, rect: pygame.Rect, rarity: str = "common") -> None:
         spec = ITEMS.get(key)
         color = YELLOW if key in WEAPONS else spec.color if spec else TEXT
-        rarity_highlight = key in WEAPONS or bool(spec and spec.kind == "armor")
+        rarity_highlight = key in WEAPONS or bool(spec and spec.kind == "armor") or rarity != "common"
         if rarity_highlight:
             color = rarity_color(rarity)
             self._draw_rarity_frame(rect, rarity)
-        if not self._draw_item_icon(key, pygame.Rect(rect.x + 12, rect.y + 8, min(36, rect.w - 18), min(36, rect.h - 20))):
+        icon_rect = pygame.Rect(rect.x + 12, rect.y + 8, min(36, rect.w - 18), min(36, rect.h - 20))
+        if not self._draw_item_icon(key, icon_rect):
             pygame.draw.circle(self.screen, color, rect.center, min(rect.w, rect.h) // 4)
             pygame.draw.circle(self.screen, (255, 255, 255), rect.center, min(rect.w, rect.h) // 4, 1)
+        self._draw_rarity_badge(rect, rarity)
         title = self.weapon_title(key) if key in WEAPONS else self.item_title(key)
         self._draw_text(title[:12], rect.x + 6, rect.y + rect.h - 20, color if rarity_highlight else TEXT, self.small)
         if amount > 1:
-            self._draw_text(str(amount), rect.right - 22, rect.y + 6, YELLOW, self.small)
+            self._draw_text(str(amount), rect.right - 26, rect.bottom - 36, YELLOW, self.small)
 
     def _draw_crafting(self, player: PlayerState) -> None:
         overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
@@ -1546,7 +1603,9 @@ class GameApp:
             self._draw_text(self.tr("weaponmods.empty"), panel.x + 42, panel.y + 170, MUTED, self.font)
             return
         mag_size = self._client_weapon_magazine_size(weapon)
-        self._draw_rarity_frame(pygame.Rect(panel.x + 32, panel.y + 116, 66, 56), weapon.rarity)
+        weapon_rect = pygame.Rect(panel.x + 32, panel.y + 116, 66, 56)
+        self._draw_rarity_frame(weapon_rect, weapon.rarity)
+        self._draw_rarity_badge(weapon_rect, weapon.rarity, compact=True)
         self._draw_item_icon(weapon.key, pygame.Rect(panel.x + 38, panel.y + 122, 54, 44))
         self._draw_text_fit(
             f"{self.rarity_title(weapon.rarity)} {self.weapon_title(weapon.key)}",
@@ -1823,34 +1882,36 @@ class GameApp:
         pygame.draw.rect(self.screen, rarity_color(rarity), rect, 2, border_radius=9)
         if not self._draw_item_icon(key, pygame.Rect(rect.x + 21, rect.y + 8, 36, 36)):
             pygame.draw.circle(self.screen, YELLOW, (rect.centerx, rect.y + 26), 15)
+        self._draw_rarity_badge(rect, rarity)
         title = self.weapon_title(key) if key in WEAPONS else self.item_title(key)
         self._draw_text_fit(title.split()[0], pygame.Rect(rect.x + 6, rect.bottom - 20, rect.w - 12, 16), TEXT, self.small, center=True)
         if amount > 1:
-            self._draw_text(str(amount), rect.right - 20, rect.y + 5, YELLOW, self.small)
+            self._draw_text(str(amount), rect.right - 24, rect.bottom - 36, YELLOW, self.small)
         if durability is not None:
             self._mini_durability(rect, durability)
 
-    def _draw_item_icon(self, key: str, rect: pygame.Rect) -> bool:
+    def _draw_item_icon(self, key: str, rect: pygame.Rect, aura: bool = True, shadow: bool = True) -> bool:
         icon = self._scaled_icon(key, rect.size)
         if not icon:
             return False
         target = icon.get_rect(center=rect.center)
         color = self._icon_color(key)
 
-        aura_rect = target.inflate(max(10, rect.w // 3), max(10, rect.h // 3))
-        aura = pygame.Surface(aura_rect.size, pygame.SRCALPHA)
-        pygame.draw.ellipse(aura, (*color, 26), aura.get_rect())
-        pygame.draw.ellipse(aura, (255, 255, 255, 18), aura.get_rect().inflate(-aura_rect.w // 3, -aura_rect.h // 3))
-        self.screen.blit(aura, aura_rect)
+        if aura:
+            aura_rect = target.inflate(max(10, rect.w // 3), max(10, rect.h // 3))
+            aura_surface = pygame.Surface(aura_rect.size, pygame.SRCALPHA)
+            pygame.draw.ellipse(aura_surface, (*color, 26), aura_surface.get_rect())
+            self.screen.blit(aura_surface, aura_rect)
 
-        shadow = icon.copy()
-        shadow.fill((0, 0, 0, 120), special_flags=pygame.BLEND_RGBA_MULT)
-        self.screen.blit(shadow, target.move(2, 3))
+        if shadow:
+            shadow_icon = icon.copy()
+            shadow_icon.fill((0, 0, 0, 120), special_flags=pygame.BLEND_RGBA_MULT)
+            self.screen.blit(shadow_icon, target.move(2, 3))
         self.screen.blit(icon, target)
         return True
 
     def _scaled_icon(self, key: str, size: tuple[int, int]) -> pygame.Surface | None:
-        source = self.item_images.get(key)
+        source = self.item_images.get(key) or self.item_images.get(self.icon_mapping.get(key, ""))
         if not source:
             return None
         max_w, max_h = max(1, size[0]), max(1, size[1])
@@ -1879,11 +1940,40 @@ class GameApp:
 
     def _draw_rarity_frame(self, rect: pygame.Rect, rarity: str, width: int = 2) -> None:
         color = rarity_color(rarity)
-        glow_rect = rect.inflate(8, 8)
+        rank = rarity_rank(rarity)
+        pulse = (math.sin(time.time() * 4.0) + 1.0) * 0.5
+        glow_rect = rect.inflate(10 + rank * 5, 10 + rank * 5)
         glow = pygame.Surface(glow_rect.size, pygame.SRCALPHA)
-        pygame.draw.rect(glow, (*color, 34), glow.get_rect(), border_radius=10)
+        for layer in range(2 + min(rank, 3)):
+            layer_rect = glow.get_rect().inflate(-layer * 5, -layer * 5)
+            alpha = max(10, int(42 + rank * 22 + pulse * 22) - layer * 17)
+            pygame.draw.rect(glow, (*color, alpha), layer_rect, 2, border_radius=10)
         self.screen.blit(glow, glow_rect)
-        pygame.draw.rect(self.screen, color, rect, width, border_radius=8)
+        pygame.draw.rect(self.screen, color, rect.inflate(2, 2), width + (1 if rank >= 2 else 0), border_radius=9)
+        corner = 10 + rank * 2
+        for sx, sy in ((rect.left, rect.top), (rect.right, rect.top), (rect.left, rect.bottom), (rect.right, rect.bottom)):
+            x_dir = 1 if sx == rect.left else -1
+            y_dir = 1 if sy == rect.top else -1
+            pygame.draw.line(self.screen, color, (sx, sy), (sx + corner * x_dir, sy), 2)
+            pygame.draw.line(self.screen, color, (sx, sy), (sx, sy + corner * y_dir), 2)
+
+    def _draw_rarity_badge(self, rect: pygame.Rect, rarity: str, compact: bool = False) -> None:
+        if rarity not in RARITY_KEYS:
+            return
+        size = 15 if compact else 18
+        inset = 1 if compact else 5
+        badge = pygame.Rect(rect.right - size - inset, rect.y + inset, size, size)
+        color = rarity_color(rarity)
+        glow_rect = badge.inflate(8, 8)
+        glow = pygame.Surface(glow_rect.size, pygame.SRCALPHA)
+        pygame.draw.ellipse(glow, (*color, 44), glow.get_rect())
+        self.screen.blit(glow, glow_rect)
+        pygame.draw.rect(self.screen, (8, 12, 20), badge, border_radius=5)
+        pygame.draw.rect(self.screen, color, badge, 1, border_radius=5)
+        icon_rect = badge.inflate(-4, -4)
+        if not self._draw_item_icon(rarity, icon_rect, aura=False, shadow=False):
+            points = [(badge.centerx, badge.y + 3), (badge.right - 3, badge.centery), (badge.centerx, badge.bottom - 3), (badge.x + 3, badge.centery)]
+            pygame.draw.polygon(self.screen, color, points)
 
     def _mini_durability(self, rect: pygame.Rect, durability: float) -> None:
         color = GREEN if durability >= 55 else YELLOW if durability >= 25 else RED
