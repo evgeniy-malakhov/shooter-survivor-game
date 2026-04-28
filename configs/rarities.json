@@ -1,0 +1,42 @@
+{
+  "common": {
+    "title": "Common",
+    "color": [145, 154, 166],
+    "loot_weight": 64,
+    "weapon_damage_multiplier": 1.0,
+    "weapon_durability_multiplier": 1.0,
+    "armor_points_multiplier": 1.0,
+    "armor_mitigation_multiplier": 1.0,
+    "armor_durability_multiplier": 1.0
+  },
+  "uncommon": {
+    "title": "Uncommon",
+    "color": [88, 205, 255],
+    "loot_weight": 24,
+    "weapon_damage_multiplier": 1.1,
+    "weapon_durability_multiplier": 1.12,
+    "armor_points_multiplier": 1.12,
+    "armor_mitigation_multiplier": 1.07,
+    "armor_durability_multiplier": 1.12
+  },
+  "rare": {
+    "title": "Rare",
+    "color": [178, 112, 255],
+    "loot_weight": 9,
+    "weapon_damage_multiplier": 1.22,
+    "weapon_durability_multiplier": 1.28,
+    "armor_points_multiplier": 1.28,
+    "armor_mitigation_multiplier": 1.14,
+    "armor_durability_multiplier": 1.28
+  },
+  "legendary": {
+    "title": "Legendary",
+    "color": [255, 211, 92],
+    "loot_weight": 3,
+    "weapon_damage_multiplier": 1.38,
+    "weapon_durability_multiplier": 1.5,
+    "armor_points_multiplier": 1.48,
+    "armor_mitigation_multiplier": 1.22,
+    "armor_durability_multiplier": 1.5
+  }
+}

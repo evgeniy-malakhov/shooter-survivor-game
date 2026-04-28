@@ -187,13 +187,26 @@ class InventoryItem:
     key: str
     amount: int = 1
     durability: float = 100.0
+    rarity: str = "common"
 
     def to_dict(self) -> dict[str, Any]:
-        return {"id": self.id, "key": self.key, "amount": self.amount, "durability": round(self.durability, 2)}
+        return {
+            "id": self.id,
+            "key": self.key,
+            "amount": self.amount,
+            "durability": round(self.durability, 2),
+            "rarity": self.rarity,
+        }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "InventoryItem":
-        return cls(str(data["id"]), str(data["key"]), int(data.get("amount", 1)), float(data.get("durability", 100.0)))
+        return cls(
+            str(data["id"]),
+            str(data["key"]),
+            int(data.get("amount", 1)),
+            float(data.get("durability", 100.0)),
+            str(data.get("rarity", "common")),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -243,6 +256,7 @@ class WeaponRuntime:
     cooldown: float = 0.0
     reload_left: float = 0.0
     durability: float = 100.0
+    rarity: str = "common"
     modules: dict[str, str | None] = field(default_factory=lambda: {"utility": None, "magazine": None})
     utility_on: bool = False
 
@@ -254,6 +268,7 @@ class WeaponRuntime:
             "cooldown": round(self.cooldown, 3),
             "reload_left": round(self.reload_left, 3),
             "durability": round(self.durability, 2),
+            "rarity": self.rarity,
             "modules": dict(self.modules),
             "utility_on": self.utility_on,
         }
@@ -267,6 +282,7 @@ class WeaponRuntime:
             cooldown=float(data.get("cooldown", 0.0)),
             reload_left=float(data.get("reload_left", 0.0)),
             durability=float(data.get("durability", 100.0)),
+            rarity=str(data.get("rarity", "common")),
         )
         weapon.modules.update({str(slot): value if value is None else str(value) for slot, value in data.get("modules", {}).items()})
         weapon.utility_on = bool(data.get("utility_on", False))
@@ -305,6 +321,8 @@ class PlayerState:
     poison_left: float = 0.0
     poison_tick: float = 0.0
     poison_damage: int = 0
+    notice: str = ""
+    notice_timer: float = 0.0
     weapons: dict[str, WeaponRuntime] = field(default_factory=dict)
 
     def active_weapon(self) -> WeaponRuntime | None:
@@ -340,6 +358,8 @@ class PlayerState:
             "poison_left": round(self.poison_left, 3),
             "poison_tick": round(self.poison_tick, 3),
             "poison_damage": self.poison_damage,
+            "notice": self.notice,
+            "notice_timer": round(self.notice_timer, 3),
             "weapons": {slot: weapon.to_dict() for slot, weapon in self.weapons.items()},
         }
 
@@ -380,6 +400,8 @@ class PlayerState:
             poison_left=float(data.get("poison_left", 0.0)),
             poison_tick=float(data.get("poison_tick", 0.0)),
             poison_damage=int(data.get("poison_damage", 0)),
+            notice=str(data.get("notice", "")),
+            notice_timer=float(data.get("notice_timer", 0.0)),
         )
         player.weapons = {
             str(slot): WeaponRuntime.from_dict(weapon)
@@ -648,6 +670,7 @@ class LootState:
     payload: str
     amount: int = 1
     floor: int = 0
+    rarity: str = "common"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -657,6 +680,7 @@ class LootState:
             "payload": self.payload,
             "amount": self.amount,
             "floor": self.floor,
+            "rarity": self.rarity,
         }
 
     @classmethod
@@ -668,6 +692,7 @@ class LootState:
             payload=str(data.get("payload", "")),
             amount=int(data.get("amount", 1)),
             floor=int(data.get("floor", 0)),
+            rarity=str(data.get("rarity", "common")),
         )
 
 

@@ -1,0 +1,46 @@
+{
+  "pistol": {
+    "title": "Viper Pistol",
+    "slot": "1",
+    "damage": 18,
+    "magazine_size": 12,
+    "fire_rate": 4.5,
+    "reload_time": 1.1,
+    "projectile_speed": 980.0,
+    "spread": 0.035,
+    "pellets": 1
+  },
+  "smg": {
+    "title": "Pulse SMG",
+    "slot": "2",
+    "damage": 10,
+    "magazine_size": 28,
+    "fire_rate": 12.0,
+    "reload_time": 1.6,
+    "projectile_speed": 920.0,
+    "spread": 0.075,
+    "pellets": 1
+  },
+  "shotgun": {
+    "title": "Breaker Shotgun",
+    "slot": "3",
+    "damage": 12,
+    "magazine_size": 6,
+    "fire_rate": 1.2,
+    "reload_time": 1.9,
+    "projectile_speed": 780.0,
+    "spread": 0.18,
+    "pellets": 7
+  },
+  "rifle": {
+    "title": "Arc Rifle",
+    "slot": "4",
+    "damage": 32,
+    "magazine_size": 20,
+    "fire_rate": 5.0,
+    "reload_time": 1.9,
+    "projectile_speed": 1180.0,
+    "spread": 0.025,
+    "pellets": 1
+  }
+}

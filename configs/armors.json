@@ -1,0 +1,27 @@
+{
+  "none": {
+    "title": "No Armor",
+    "mitigation": 0.0,
+    "armor_points": 0
+  },
+  "light": {
+    "title": "Light Vest",
+    "mitigation": 0.18,
+    "armor_points": 45
+  },
+  "medium": {
+    "title": "Medium Armor",
+    "mitigation": 0.3,
+    "armor_points": 72
+  },
+  "tactical": {
+    "title": "Tactical Rig",
+    "mitigation": 0.3,
+    "armor_points": 70
+  },
+  "heavy": {
+    "title": "Heavy Plate",
+    "mitigation": 0.42,
+    "armor_points": 110
+  }
+}

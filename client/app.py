@@ -16,6 +16,7 @@ from shared.explosives import GRENADE_SPECS, DEFAULT_GRENADE
 from shared.items import EQUIPMENT_SLOTS, ITEMS, RECIPES
 from shared.level import tunnel_segments
 from shared.models import BuildingState, InputCommand, LootState, PlayerState, RectState, Vec2, WorldSnapshot
+from shared.rarities import rarity_color, rarity_spec
 from shared.simulation import GameWorld
 from shared.weapon_modules import WEAPON_MODULES, WEAPON_MODULE_SLOTS
 
@@ -198,6 +199,8 @@ class GameApp:
         return image.convert_alpha()
 
     def item_title(self, key: str) -> str:
+        if key in WEAPONS:
+            return self.weapon_title(key)
         return self.tr(f"item.{key}") if self.tr(f"item.{key}") != f"item.{key}" else ITEMS.get(key).title if key in ITEMS else key
 
     def weapon_title(self, key: str) -> str:
@@ -205,6 +208,10 @@ class GameApp:
 
     def recipe_title(self, key: str) -> str:
         return self.tr(f"recipe.{key}") if self.tr(f"recipe.{key}") != f"recipe.{key}" else RECIPES[key].title
+
+    def rarity_title(self, key: str) -> str:
+        localized = self.tr(f"rarity.{key}")
+        return localized if localized != f"rarity.{key}" else rarity_spec(key).title
 
     def run(self) -> None:
         while self.running:
@@ -331,7 +338,9 @@ class GameApp:
                 elif self.drag_source["source"] == "weapon_slot" and target["source"] == "weapon_slot":
                     self.pending_inventory_action = {"type": "quick_swap", "a": self.drag_source["slot"], "b": target["slot"]}
                 else:
-                    dst = "quick_item" if target["source"] == "weapon_slot" else target["source"]
+                    payload = self._dragged_payload(player)
+                    payload_key = payload[0] if payload else ""
+                    dst = "weapon_slot" if target["source"] == "weapon_slot" and payload_key in WEAPONS else "quick_item" if target["source"] == "weapon_slot" else target["source"]
                     action = {"type": "move", "src": self.drag_source["source"], "dst": dst}
                     if self.drag_source["source"] == "backpack":
                         action["src_index"] = self.drag_source["index"]
@@ -882,8 +891,16 @@ class GameApp:
                 icon_key = item.payload if item.kind in {"item", "weapon", "armor"} else "ammo_pack" if item.kind == "ammo" else "medicine"
                 if item.kind == "item" and item.payload in ITEMS:
                     color = ITEMS[item.payload].color
+                spec = ITEMS.get(item.payload)
+                rare_visual = item.kind in {"weapon", "armor"} or bool(spec and spec.kind == "armor")
+                if rare_visual:
+                    color = rarity_color(item.rarity)
                 glow = 3 + int((math.sin(snapshot.time * 5.0 + sx * 0.01) + 1) * 2)
                 glow_rect = pygame.Rect(sx - 19 - glow, sy - 19 - glow, 38 + glow * 2, 38 + glow * 2)
+                if rare_visual:
+                    aura = pygame.Surface((glow_rect.w + 18, glow_rect.h + 18), pygame.SRCALPHA)
+                    pygame.draw.rect(aura, (*color, 34), aura.get_rect(), border_radius=8)
+                    self.screen.blit(aura, (glow_rect.x - 9, glow_rect.y - 9))
                 pygame.draw.rect(self.screen, (*color,), glow_rect, 2, border_radius=5)
                 pygame.draw.rect(self.screen, (255, 255, 255), pygame.Rect(sx - 17, sy - 17, 34, 34), 1, border_radius=5)
                 if not self._draw_item_icon(icon_key, pygame.Rect(sx - 13, sy - 13, 26, 26)):
@@ -1177,7 +1194,7 @@ class GameApp:
             pygame.draw.rect(self.screen, (92, 255, 114), pygame.Rect(58, 66, 278, 24), 2, border_radius=7)
             pygame.draw.circle(self.screen, (30, 92, 34), (342, 78), 12)
             pygame.draw.circle(self.screen, (110, 255, 118, poison_alpha), (342, 78), 8)
-        armor_max = max(1, ARMORS[player.armor_key].armor_points)
+        armor_max = self._client_armor_max(player)
         if not self._draw_item_icon("shield", pygame.Rect(31, 92, 24, 24)):
             pygame.draw.rect(self.screen, CYAN, pygame.Rect(34, 91, 18, 18), 2, border_radius=3)
         self._bar(62, 97, 270, 12, player.armor / armor_max, CYAN)
@@ -1200,7 +1217,7 @@ class GameApp:
         reload_text = ""
         if weapon:
             spec = WEAPONS[weapon.key]
-            weapon_title = self.weapon_title(spec.key)
+            weapon_title = f"{self.rarity_title(weapon.rarity)} {self.weapon_title(spec.key)}"
             ammo = f"{weapon.ammo_in_mag}/{weapon.reserve_ammo}"
             if weapon.reload_left > 0:
                 reload_text = f" {self.tr('hud.reloading')} {weapon.reload_left:.1f}s"
@@ -1222,11 +1239,13 @@ class GameApp:
             quick_item = player.quick_items.get(slot)
             if weapon:
                 label = f"{slot} {self.weapon_title(weapon.key).split()[0]}"
+                self._draw_rarity_frame(rect, weapon.rarity)
                 self._mini_durability(rect, weapon.durability)
             elif quick_item:
                 label = f"{slot} {self.item_title(quick_item.key).split()[0]}"
                 self._draw_item_icon(quick_item.key, pygame.Rect(rect.x + 22, rect.y + 6, 28, 28))
             self._draw_text_fit(label, rect.inflate(-10, -12), TEXT if weapon or quick_item else MUTED, self.small, center=True)
+        self._draw_notice(player)
 
     def _draw_minimap(self, snapshot: WorldSnapshot, player: PlayerState | None) -> None:
         size = 226 if self.minimap_big else 156
@@ -1259,6 +1278,19 @@ class GameApp:
                 max(2, int(building.bounds.h / MAP_HEIGHT * rect.h)),
             )
             pygame.draw.rect(self.screen, (84, 95, 118), mini, 1)
+
+    def _draw_notice(self, player: PlayerState) -> None:
+        if not player.notice or player.notice_timer <= 0.0:
+            return
+        text = self.tr(player.notice)
+        alpha = int(90 + min(1.0, player.notice_timer / 0.5) * 120)
+        rect = pygame.Rect(0, 0, 430, 42)
+        rect.center = (SCREEN_W // 2, 92)
+        surface = pygame.Surface(rect.size, pygame.SRCALPHA)
+        pygame.draw.rect(surface, (20, 24, 36, alpha), surface.get_rect(), border_radius=10)
+        pygame.draw.rect(surface, (*YELLOW, min(255, alpha + 30)), surface.get_rect(), 2, border_radius=10)
+        self.screen.blit(surface, rect)
+        self._draw_text_fit(text, rect.inflate(-24, -10), TEXT, self.font, center=True)
 
     def _draw_context_prompt(self, snapshot: WorldSnapshot, player: PlayerState | None, camera: Vec2) -> None:
         if not player or not player.alive:
@@ -1362,10 +1394,11 @@ class GameApp:
             weapon = player.weapons.get(slot)
             quick_item = player.quick_items.get(slot)
             if weapon and not self._is_dragging("weapon_slot", slot=slot):
+                self._draw_rarity_frame(rect, weapon.rarity)
                 self._draw_item_icon(weapon.key, pygame.Rect(rect.x + 16, rect.y + 11, 34, 34))
                 self._mini_durability(rect, weapon.durability)
             elif quick_item and not self._is_dragging("quick_item", slot=slot):
-                self._draw_item(quick_item.key, quick_item.amount, rect)
+                self._draw_item(quick_item.key, quick_item.amount, rect, quick_item.rarity)
 
         for slot in EQUIPMENT_SLOTS:
             rect = self._equipment_rect(slot)
@@ -1374,7 +1407,7 @@ class GameApp:
             pygame.draw.rect(self.screen, PURPLE if item else (58, 58, 88), rect, 2, border_radius=8)
             self._draw_text(self.tr(f"slot.{slot}"), rect.x + 12, rect.y + 10, MUTED, self.small)
             if item and not self._is_dragging("equipment", slot=slot):
-                self._draw_item(item.key, item.amount, rect)
+                self._draw_item(item.key, item.amount, rect, item.rarity)
                 self._mini_durability(rect, item.durability)
             repair = pygame.Rect(rect.right + 12, rect.y + 12, 70, 34)
             pygame.draw.rect(self.screen, PANEL_2, repair, border_radius=6)
@@ -1387,7 +1420,7 @@ class GameApp:
             pygame.draw.rect(self.screen, (52, 68, 98), rect, 1, border_radius=8)
             item = player.backpack[index] if index < len(player.backpack) else None
             if item and not self._is_dragging("backpack", index=index):
-                self._draw_item(item.key, item.amount, rect)
+                self._draw_item(item.key, item.amount, rect, item.rarity)
 
         drop = self._drop_rect()
         drop_hovered = bool(self.drag_source and drop.collidepoint(pygame.mouse.get_pos()))
@@ -1402,14 +1435,18 @@ class GameApp:
             self._draw_weapon_customization(player)
         self._draw_drag_preview(player)
 
-    def _draw_item(self, key: str, amount: int, rect: pygame.Rect) -> None:
+    def _draw_item(self, key: str, amount: int, rect: pygame.Rect, rarity: str = "common") -> None:
         spec = ITEMS.get(key)
-        color = spec.color if spec else TEXT
+        color = YELLOW if key in WEAPONS else spec.color if spec else TEXT
+        rarity_highlight = key in WEAPONS or bool(spec and spec.kind == "armor")
+        if rarity_highlight:
+            color = rarity_color(rarity)
+            self._draw_rarity_frame(rect, rarity)
         if not self._draw_item_icon(key, pygame.Rect(rect.x + 12, rect.y + 8, min(36, rect.w - 18), min(36, rect.h - 20))):
             pygame.draw.circle(self.screen, color, rect.center, min(rect.w, rect.h) // 4)
             pygame.draw.circle(self.screen, (255, 255, 255), rect.center, min(rect.w, rect.h) // 4, 1)
-        title = self.item_title(key)
-        self._draw_text(title[:12], rect.x + 6, rect.y + rect.h - 20, TEXT, self.small)
+        title = self.weapon_title(key) if key in WEAPONS else self.item_title(key)
+        self._draw_text(title[:12], rect.x + 6, rect.y + rect.h - 20, color if rarity_highlight else TEXT, self.small)
         if amount > 1:
             self._draw_text(str(amount), rect.right - 22, rect.y + 6, YELLOW, self.small)
 
@@ -1470,8 +1507,14 @@ class GameApp:
             self._draw_text(self.tr("weaponmods.empty"), panel.x + 42, panel.y + 170, MUTED, self.font)
             return
         mag_size = self._client_weapon_magazine_size(weapon)
+        self._draw_rarity_frame(pygame.Rect(panel.x + 32, panel.y + 116, 66, 56), weapon.rarity)
         self._draw_item_icon(weapon.key, pygame.Rect(panel.x + 38, panel.y + 122, 54, 44))
-        self._draw_text_fit(self.weapon_title(weapon.key), pygame.Rect(panel.x + 104, panel.y + 122, 280, 24), TEXT, self.font)
+        self._draw_text_fit(
+            f"{self.rarity_title(weapon.rarity)} {self.weapon_title(weapon.key)}",
+            pygame.Rect(panel.x + 104, panel.y + 122, 280, 24),
+            rarity_color(weapon.rarity),
+            self.font,
+        )
         self._draw_text(f"{self.tr('weaponmods.magazine')}: {mag_size}", panel.x + 104, panel.y + 150, MUTED, self.small)
         self._draw_text(self.tr("weaponmods.drag"), panel.x + 42, panel.y + 208, MUTED, self.small)
 
@@ -1498,6 +1541,17 @@ class GameApp:
         module_key = weapon.modules.get("magazine")
         module = WEAPON_MODULES.get(module_key or "")
         return max(base, int(math.ceil(base * (module.magazine_multiplier if module else 1.0))))
+
+    def _client_armor_max(self, player: PlayerState) -> int:
+        best = max(1, ARMORS.get(player.armor_key, ARMORS["none"]).armor_points)
+        for item in player.equipment.values():
+            spec = ITEMS.get(item.key) if item else None
+            if not item or not spec or not spec.armor_key or item.durability <= 0:
+                continue
+            armor = ARMORS.get(spec.armor_key, ARMORS["none"])
+            rarity = rarity_spec(item.rarity)
+            best = max(best, int(round(armor.armor_points * rarity.armor_points_multiplier)))
+        return max(1, best)
 
     def _draw_settings(self, panel_only: bool = False) -> None:
         if not panel_only:
@@ -1684,27 +1738,27 @@ class GameApp:
             return False
         return True
 
-    def _dragged_payload(self, player: PlayerState | None) -> tuple[str, int, float | None] | None:
+    def _dragged_payload(self, player: PlayerState | None) -> tuple[str, int, float | None, str] | None:
         if not player or not self.drag_source:
             return None
         source = str(self.drag_source.get("source", ""))
         if source == "backpack":
             index = int(self.drag_source.get("index", -1))
             item = player.backpack[index] if 0 <= index < len(player.backpack) else None
-            return (item.key, item.amount, item.durability) if item else None
+            return (item.key, item.amount, item.durability, item.rarity) if item else None
         if source == "equipment":
             item = player.equipment.get(str(self.drag_source.get("slot", "")))
-            return (item.key, item.amount, item.durability) if item else None
+            return (item.key, item.amount, item.durability, item.rarity) if item else None
         if source == "quick_item":
             item = player.quick_items.get(str(self.drag_source.get("slot", "")))
-            return (item.key, item.amount, item.durability) if item else None
+            return (item.key, item.amount, item.durability, item.rarity) if item else None
         if source == "weapon_module":
             weapon = player.weapons.get(str(self.drag_source.get("slot", "")))
             module_key = weapon.modules.get(str(self.drag_source.get("module_slot", ""))) if weapon else None
-            return (module_key, 1, 100.0) if module_key else None
+            return (module_key, 1, 100.0, "common") if module_key else None
         if source == "weapon_slot":
             weapon = player.weapons.get(str(self.drag_source.get("slot", "")))
-            return (weapon.key, 1, weapon.durability) if weapon else None
+            return (weapon.key, 1, weapon.durability, weapon.rarity) if weapon else None
         return None
 
     def _custom_weapon_slot(self, player: PlayerState | None) -> str:
@@ -1720,14 +1774,14 @@ class GameApp:
         payload = self._dragged_payload(player)
         if not payload:
             return
-        key, amount, durability = payload
+        key, amount, durability, rarity = payload
         mx, my = pygame.mouse.get_pos()
         rect = pygame.Rect(mx - 36, my - 32, 78, 66)
         glow = pygame.Surface((rect.w + 14, rect.h + 14), pygame.SRCALPHA)
-        pygame.draw.rect(glow, (76, 225, 255, 48), glow.get_rect(), border_radius=12)
+        pygame.draw.rect(glow, (*rarity_color(rarity), 54), glow.get_rect(), border_radius=12)
         self.screen.blit(glow, (rect.x - 7, rect.y - 7))
         pygame.draw.rect(self.screen, PANEL_2, rect, border_radius=9)
-        pygame.draw.rect(self.screen, CYAN, rect, 2, border_radius=9)
+        pygame.draw.rect(self.screen, rarity_color(rarity), rect, 2, border_radius=9)
         if not self._draw_item_icon(key, pygame.Rect(rect.x + 21, rect.y + 8, 36, 36)):
             pygame.draw.circle(self.screen, YELLOW, (rect.centerx, rect.y + 26), 15)
         title = self.weapon_title(key) if key in WEAPONS else self.item_title(key)
@@ -1784,6 +1838,14 @@ class GameApp:
             return spec.color
         return TEXT
 
+    def _draw_rarity_frame(self, rect: pygame.Rect, rarity: str, width: int = 2) -> None:
+        color = rarity_color(rarity)
+        glow_rect = rect.inflate(8, 8)
+        glow = pygame.Surface(glow_rect.size, pygame.SRCALPHA)
+        pygame.draw.rect(glow, (*color, 34), glow.get_rect(), border_radius=10)
+        self.screen.blit(glow, glow_rect)
+        pygame.draw.rect(self.screen, color, rect, width, border_radius=8)
+
     def _mini_durability(self, rect: pygame.Rect, durability: float) -> None:
         color = GREEN if durability >= 55 else YELLOW if durability >= 25 else RED
         bar = pygame.Rect(rect.x + 8, rect.bottom - 7, rect.w - 16, 4)
@@ -1834,11 +1896,14 @@ class GameApp:
 
     def _loot_label(self, item: LootState) -> str:
         if item.kind == "item" and item.payload in ITEMS:
+            if ITEMS[item.payload].kind == "armor":
+                return f"{self.rarity_title(item.rarity)} {self.item_title(item.payload)} x{item.amount}"
             return f"{self.item_title(item.payload)} x{item.amount}"
         if item.kind == "weapon" and item.payload in WEAPONS:
-            return self.weapon_title(item.payload)
+            return f"{self.rarity_title(item.rarity)} {self.weapon_title(item.payload)}"
         if item.kind == "armor" and item.payload in ARMORS:
-            return self.tr(f"armor.{item.payload}") if self.tr(f"armor.{item.payload}") != f"armor.{item.payload}" else ARMORS[item.payload].title
+            armor_title = self.tr(f"armor.{item.payload}") if self.tr(f"armor.{item.payload}") != f"armor.{item.payload}" else ARMORS[item.payload].title
+            return f"{self.rarity_title(item.rarity)} {armor_title}"
         if item.kind == "ammo":
             return f"{self.tr('item.ammo_pack')} +{item.amount}"
         return self.tr("item.medicine")

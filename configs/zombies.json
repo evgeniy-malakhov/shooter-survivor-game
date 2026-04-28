@@ -1,0 +1,58 @@
+{
+  "walker": {
+    "title": "Walker",
+    "health": 70,
+    "armor": 0,
+    "speed": 92.0,
+    "damage": 13,
+    "radius": 24.0,
+    "color": [114, 222, 158],
+    "sight_range": 540.0,
+    "hearing_range": 430.0,
+    "fov_degrees": 116.0,
+    "sensitivity": 0.85,
+    "suspicion_time": 1.4
+  },
+  "runner": {
+    "title": "Runner",
+    "health": 38,
+    "armor": 0,
+    "speed": 165.0,
+    "damage": 9,
+    "radius": 19.0,
+    "color": [255, 101, 112],
+    "sight_range": 620.0,
+    "hearing_range": 620.0,
+    "fov_degrees": 132.0,
+    "sensitivity": 1.25,
+    "suspicion_time": 0.9
+  },
+  "brute": {
+    "title": "Brute",
+    "health": 115,
+    "armor": 55,
+    "speed": 62.0,
+    "damage": 21,
+    "radius": 31.0,
+    "color": [127, 164, 255],
+    "sight_range": 470.0,
+    "hearing_range": 360.0,
+    "fov_degrees": 94.0,
+    "sensitivity": 0.65,
+    "suspicion_time": 1.8
+  },
+  "leaper": {
+    "title": "Leaper",
+    "health": 64,
+    "armor": 10,
+    "speed": 188.0,
+    "damage": 11,
+    "radius": 20.0,
+    "color": [92, 246, 124],
+    "sight_range": 660.0,
+    "hearing_range": 560.0,
+    "fov_degrees": 124.0,
+    "sensitivity": 1.05,
+    "suspicion_time": 1.0
+  }
+}

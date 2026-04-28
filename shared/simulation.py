@@ -29,6 +29,7 @@ from shared.difficulty import DifficultyConfig, load_difficulty
 from shared.explosives import GRENADE_SPECS, MINE_SPECS, DEFAULT_GRENADE, DEFAULT_MINE
 from shared.items import ITEMS, LEGACY_LOOT_TO_ITEM, RECIPES, WORLD_LOOT, HOUSE_LOOT
 from shared.level import all_closed_walls, make_buildings, nearest_door, nearest_prop, nearest_stairs, point_building
+from shared.rarities import RARITIES, rarity_rank, rarity_spec
 from shared.weapon_modules import WEAPON_MODULES
 from shared.models import (
     BuildingState,
@@ -123,6 +124,7 @@ class GameWorld:
             weapon_key,
             weapon_spec.magazine_size,
             self.backpack_config.starting_weapon.reserve_ammo,
+            rarity="common",
         )
         player.quick_items = {slot: None for slot in SLOTS}
         for item in self.backpack_config.starting_items:
@@ -182,6 +184,7 @@ class GameWorld:
             if not command:
                 continue
             self._grenade_cooldowns[player.id] = max(0.0, self._grenade_cooldowns.get(player.id, 0.0) - dt)
+            self._update_notice(player, dt)
             if not player.alive:
                 if command.respawn:
                     self.respawn_player(player.id)
@@ -656,8 +659,8 @@ class GameWorld:
         player.healing_left = 0.0
         player.healing_pool = 0.0
         player.healing_rate = 0.0
-        armor_spec = ARMORS.get(player.armor_key, ARMORS["none"])
-        mitigated = int(damage * armor_spec.mitigation)
+        mitigation = self._player_armor_mitigation(player)
+        mitigated = int(damage * mitigation)
         remaining = max(1, damage - mitigated)
         if player.armor > 0:
             absorbed = min(player.armor, max(1, mitigated + damage // 4))
@@ -665,12 +668,36 @@ class GameWorld:
             remaining = max(1, remaining - absorbed // 4)
             for item in player.equipment.values():
                 if item:
-                    wear = max(0.4, damage * 0.08) * self.difficulty.armor_wear_multiplier
+                    rarity = rarity_spec(item.rarity)
+                    wear = (
+                        max(0.4, damage * 0.08)
+                        * self.difficulty.armor_wear_multiplier
+                        / rarity.armor_durability_multiplier
+                    )
                     item.durability = max(0.0, item.durability - wear)
         player.health -= remaining
         if player.health <= 0:
             player.health = 0
             player.alive = False
+
+    def _player_armor_mitigation(self, player: PlayerState) -> float:
+        best = 0.0
+        for item in player.equipment.values():
+            spec = ITEMS.get(item.key) if item else None
+            if not item or not spec or not spec.armor_key or item.durability <= 0:
+                continue
+            armor = ARMORS.get(spec.armor_key, ARMORS["none"])
+            rarity = rarity_spec(item.rarity)
+            best = max(best, armor.mitigation * rarity.armor_mitigation_multiplier)
+        return min(0.88, best)
+
+    def _effective_armor_points(self, item: InventoryItem | None) -> int:
+        spec = ITEMS.get(item.key) if item else None
+        if not item or not spec or not spec.armor_key:
+            return 0
+        armor = ARMORS.get(spec.armor_key, ARMORS["none"])
+        rarity = rarity_spec(item.rarity)
+        return max(0, int(round(armor.armor_points * rarity.armor_points_multiplier)))
 
     def _update_healing(self, player: PlayerState, dt: float) -> None:
         if player.healing_left <= 0.0 or player.healing_pool <= 0.0 or player.health >= 100:
@@ -679,6 +706,19 @@ class GameWorld:
         player.healing_pool -= healed
         player.healing_left = max(0.0, player.healing_left - dt)
         player.health = min(100, player.health + healed)
+
+    def _set_notice(self, player: PlayerState, key: str, seconds: float = 2.2) -> None:
+        player.notice = key
+        player.notice_timer = max(player.notice_timer, seconds)
+
+    def _update_notice(self, player: PlayerState, dt: float) -> None:
+        if player.notice_timer <= 0.0:
+            player.notice = ""
+            player.notice_timer = 0.0
+            return
+        player.notice_timer = max(0.0, player.notice_timer - dt)
+        if player.notice_timer <= 0.0:
+            player.notice = ""
 
     def _apply_inventory_action(self, player: PlayerState, action: dict[str, object]) -> None:
         action_type = str(action.get("type", ""))
@@ -704,13 +744,13 @@ class GameWorld:
             if source == "weapon_slot" and slot in player.weapons:
                 weapon = player.weapons.pop(slot, None)
                 if weapon:
-                    self._spawn_loot_at(player.pos.copy(), "weapon", weapon.key, 1, floor=player.floor)
+                    self._spawn_loot_at(player.pos.copy(), "weapon", weapon.key, 1, floor=player.floor, rarity=weapon.rarity)
                     if player.active_slot == slot:
                         player.active_slot = next((slot_key for slot_key in SLOTS if player.weapons.get(slot_key)), "1")
                 return
             item = self._take_item(player, source, index, slot, module_slot)
             if item:
-                self._spawn_loot_at(player.pos.copy(), "item", item.key, item.amount, floor=player.floor)
+                self._spawn_loot_at(player.pos.copy(), "item", item.key, item.amount, floor=player.floor, rarity=item.rarity)
         elif action_type == "use":
             index = int(action.get("index", -1))
             if 0 <= index < len(player.backpack):
@@ -729,6 +769,11 @@ class GameWorld:
         dst_slot = str(action.get("dst_slot", ""))
         src_module = str(action.get("src_module", ""))
         dst_module = str(action.get("dst_module", ""))
+        if src == "weapon_slot":
+            if dst != "backpack":
+                return
+            if not (0 <= dst_index < len(player.backpack)) or player.backpack[dst_index] is not None:
+                return
         item = self._take_item(player, src, src_index, src_slot, src_module)
         if not item:
             return
@@ -742,6 +787,13 @@ class GameWorld:
             item = player.backpack[index]
             player.backpack[index] = None
             return item
+        if source == "weapon_slot" and slot in player.weapons:
+            weapon = player.weapons.pop(slot, None)
+            if not weapon:
+                return None
+            if player.active_slot == slot:
+                player.active_slot = next((slot_key for slot_key in SLOTS if player.weapons.get(slot_key)), slot)
+            return InventoryItem(self._id("it"), weapon.key, 1, durability=weapon.durability, rarity=weapon.rarity)
         if source == "equipment" and slot in player.equipment:
             item = player.equipment[slot]
             player.equipment[slot] = None
@@ -786,6 +838,25 @@ class GameWorld:
             if module_slot == "utility":
                 weapon.utility_on = False
             return InventoryItem(self._id("it"), displaced_key, 1) if displaced_key else None
+        if destination == "weapon_slot" and slot in SLOTS:
+            if player.weapons.get(slot) or player.quick_items.get(slot):
+                return item
+            if item.key in WEAPONS:
+                spec = WEAPONS[item.key]
+                player.weapons[slot] = WeaponRuntime(
+                    item.key,
+                    spec.magazine_size,
+                    spec.magazine_size * 2,
+                    durability=item.durability,
+                    rarity=item.rarity,
+                )
+                player.active_slot = slot
+                return None
+            spec = ITEMS.get(item.key)
+            if spec and spec.kind in {"grenade", "mine"}:
+                player.quick_items[slot] = item
+                return None
+            return item
         if destination == "equipment" and slot in player.equipment:
             spec = ITEMS.get(item.key)
             if not spec or spec.equipment_slot != slot:
@@ -831,7 +902,10 @@ class GameWorld:
             return
         for key, amount in recipe.requires.items():
             self._remove_items(player, key, amount)
-        self._add_item(player, recipe.result[0], recipe.result[1])
+        result_key, result_amount = recipe.result
+        result_spec = ITEMS.get(result_key)
+        result_rarity = self._roll_rarity() if result_spec and result_spec.kind == "armor" else "common"
+        self._add_item(player, result_key, result_amount, rarity=result_rarity)
 
     def _repair_armor(self, player: PlayerState, slot: str) -> None:
         if not nearest_prop(self.buildings, player.pos, INTERACT_RADIUS, "repair_table", player.floor):
@@ -844,7 +918,7 @@ class GameWorld:
         spec = ITEMS.get(item.key)
         if spec and spec.armor_key and spec.armor_key in ARMORS:
             player.armor_key = spec.armor_key
-            player.armor = min(ARMORS[spec.armor_key].armor_points, player.armor + 35)
+            player.armor = min(self._effective_armor_points(item), player.armor + 35)
 
     def _repair_with_kit(self, player: PlayerState, action: dict[str, object]) -> None:
         kit_index = int(action.get("kit_index", -1))
@@ -877,13 +951,13 @@ class GameWorld:
         if kit.amount <= 0:
             player.backpack[kit_index] = None
 
-    def _add_item(self, player: PlayerState, key: str, amount: int) -> bool:
+    def _add_item(self, player: PlayerState, key: str, amount: int, rarity: str = "common") -> bool:
         spec = ITEMS.get(key)
         if not spec:
             return False
         remaining = amount
         for item in player.backpack:
-            if item and item.key == key and item.amount < spec.stack_size:
+            if item and item.key == key and item.rarity == rarity and item.amount < spec.stack_size:
                 add = min(remaining, spec.stack_size - item.amount)
                 item.amount += add
                 remaining -= add
@@ -892,11 +966,30 @@ class GameWorld:
         for index, item in enumerate(player.backpack):
             if item is None:
                 add = min(remaining, spec.stack_size)
-                player.backpack[index] = InventoryItem(self._id("it"), key, add)
+                player.backpack[index] = InventoryItem(self._id("it"), key, add, rarity=rarity)
                 remaining -= add
                 if remaining <= 0:
                     return True
         return False
+
+    def _add_weapon_to_backpack(self, player: PlayerState, weapon_key: str, rarity: str, durability: float = 100.0) -> bool:
+        if weapon_key not in WEAPONS:
+            return False
+        for index, item in enumerate(player.backpack):
+            if item is None:
+                player.backpack[index] = InventoryItem(self._id("it"), weapon_key, 1, durability=durability, rarity=rarity)
+                return True
+        return False
+
+    def _free_quick_slot(self, player: PlayerState, preferred: str | None = None) -> str | None:
+        ordered = ([preferred] if preferred in SLOTS else []) + [slot for slot in SLOTS if slot != preferred]
+        for slot in ordered:
+            if not player.weapons.get(slot) and not player.quick_items.get(slot):
+                return slot
+        return None
+
+    def _pickup_failed_full(self, player: PlayerState) -> None:
+        self._set_notice(player, "notice.backpack_full")
 
     def _count_item(self, player: PlayerState, key: str) -> int:
         return sum(item.amount for item in player.backpack if item and item.key == key)
@@ -919,17 +1012,20 @@ class GameWorld:
 
     def _recalculate_armor(self, player: PlayerState) -> None:
         best_key = "none"
+        best_points = 0
         for item in player.equipment.values():
             spec = ITEMS.get(item.key) if item else None
             if spec and spec.armor_key and item.durability > 0:
-                if ARMORS[spec.armor_key].armor_points > ARMORS[best_key].armor_points:
+                points = self._effective_armor_points(item)
+                if points > best_points:
                     best_key = spec.armor_key
+                    best_points = points
         player.armor_key = best_key
         if best_key == "none":
             player.armor = 0
         else:
-            player.armor = max(player.armor, int(ARMORS[best_key].armor_points * 0.65))
-            player.armor = min(player.armor, ARMORS[best_key].armor_points)
+            player.armor = max(player.armor, int(best_points * 0.65))
+            player.armor = min(player.armor, best_points)
 
     def _equip_armor(self, player: PlayerState, armor_key: str) -> None:
         spec = ARMORS[armor_key]
@@ -1000,11 +1096,12 @@ class GameWorld:
             return
 
         weapon.ammo_in_mag -= 1
-        wear = self.rng.uniform(0.08, 0.22) * self.difficulty.weapon_wear_multiplier
+        rarity = rarity_spec(weapon.rarity)
+        wear = self.rng.uniform(0.08, 0.22) * self.difficulty.weapon_wear_multiplier / rarity.weapon_durability_multiplier
         weapon.durability = max(0.0, weapon.durability - wear)
         weapon.cooldown = 1.0 / spec.fire_rate
         damage_multiplier = self.difficulty.weapon_damage_multipliers.get(spec.key, self.difficulty.weapon_damage_multiplier)
-        projectile_damage = max(1, int(round(spec.damage * damage_multiplier)))
+        projectile_damage = max(1, int(round(spec.damage * damage_multiplier * rarity.weapon_damage_multiplier)))
         for pellet_index in range(spec.pellets):
             weapon_spread = self._weapon_spread(weapon)
             spread = self.rng.uniform(-weapon_spread, weapon_spread)
@@ -1175,24 +1272,44 @@ class GameWorld:
             current = player.weapons.get(spec.slot)
             if current:
                 current.reserve_ammo += spec.magazine_size
+                if rarity_rank(closest.rarity) > rarity_rank(current.rarity):
+                    current.rarity = closest.rarity
+                    current.durability = max(current.durability, 100.0)
             else:
-                player.weapons[spec.slot] = WeaponRuntime(spec.key, spec.magazine_size, spec.magazine_size * 2)
-                player.active_slot = spec.slot
+                target_slot = self._free_quick_slot(player, spec.slot)
+                if target_slot:
+                    player.weapons[target_slot] = WeaponRuntime(
+                        spec.key,
+                        spec.magazine_size,
+                        spec.magazine_size * 2,
+                        rarity=closest.rarity,
+                    )
+                    player.active_slot = target_slot
+                elif not self._add_weapon_to_backpack(player, spec.key, closest.rarity):
+                    self._pickup_failed_full(player)
+                    return
             self._add_item(player, "ammo_pack", 1)
         elif closest.kind == "ammo":
+            if not self._add_item(player, "ammo_pack", max(1, closest.amount // 12)):
+                self._pickup_failed_full(player)
+                return
             for weapon in player.weapons.values():
                 if weapon.key == closest.payload:
                     weapon.reserve_ammo += closest.amount
                     break
-            self._add_item(player, "ammo_pack", max(1, closest.amount // 12))
         elif closest.kind == "armor" and closest.payload in ARMORS:
-            armor_item = "light_torso"
-            self._add_item(player, armor_item, 1)
+            armor_item = f"{closest.payload}_torso" if f"{closest.payload}_torso" in ITEMS else "light_torso"
+            if not self._add_item(player, armor_item, 1, rarity=closest.rarity):
+                self._pickup_failed_full(player)
+                return
         elif closest.kind == "medkit":
+            if not self._add_item(player, "medicine", closest.amount):
+                self._pickup_failed_full(player)
+                return
             player.medkits += closest.amount
-            self._add_item(player, "medicine", closest.amount)
         elif closest.kind == "item" and closest.payload in ITEMS:
-            if not self._add_item(player, closest.payload, closest.amount):
+            if not self._add_item(player, closest.payload, closest.amount, rarity=closest.rarity):
+                self._pickup_failed_full(player)
                 return
 
         self.loot.pop(closest.id, None)
@@ -1225,15 +1342,37 @@ class GameWorld:
     def _loot_count(self, base: int, minimum: int = 1) -> int:
         return max(minimum, int(round(base * self.difficulty.loot_spawn_multiplier)))
 
-    def spawn_loot(self, kind: str, payload: str, amount: int) -> LootState:
-        return self._spawn_loot_at(self._random_open_pos(centered=False), kind, payload, amount)
+    def spawn_loot(self, kind: str, payload: str, amount: int, rarity: str | None = None) -> LootState:
+        return self._spawn_loot_at(self._random_open_pos(centered=False), kind, payload, amount, rarity=rarity)
 
-    def _spawn_loot_at(self, pos: Vec2, kind: str, payload: str, amount: int, floor: int = 0) -> LootState:
+    def _spawn_loot_at(
+        self,
+        pos: Vec2,
+        kind: str,
+        payload: str,
+        amount: int,
+        floor: int = 0,
+        rarity: str | None = None,
+    ) -> LootState:
         if kind == "medkit":
             payload = "medkit"
-        item = LootState(self._id("l"), kind, pos, payload, amount, floor=floor)
+        item_rarity = rarity or self._loot_rarity(kind, payload)
+        item = LootState(self._id("l"), kind, pos, payload, amount, floor=floor, rarity=item_rarity)
         self.loot[item.id] = item
         return item
+
+    def _loot_rarity(self, kind: str, payload: str) -> str:
+        spec = ITEMS.get(payload)
+        if kind in {"weapon", "armor"} or (kind == "item" and spec and spec.kind == "armor"):
+            return self._roll_rarity()
+        return "common"
+
+    def _roll_rarity(self) -> str:
+        keys = list(RARITIES)
+        weights = [RARITIES[key].loot_weight for key in keys]
+        if sum(weights) <= 0:
+            return "common"
+        return self.rng.choices(keys, weights=weights)[0]
 
     def _spawn_random_loot(self) -> None:
         roll = self.rng.random()

@@ -16,6 +16,10 @@
     {
       "key": "cloth",
       "amount": 2
+    },
+    {
+      "key": "mine_heavy",
+      "amount": 3
     }
   ]
 }
