@@ -101,7 +101,7 @@
   "weaponmods.empty_slot": "пусто",
   "weaponmods.slot.utility": "Утилита",
   "weaponmods.slot.magazine": "Магазин",
-  "death.title": "Вы ранены",
+  "death.title": "Потрачено",
   "death.online": "Нажмите Space для возрождения",
   "death.single": "Нажмите Space для возрождения или Esc для меню",
   "slot.head": "Голова",

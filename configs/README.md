@@ -14,6 +14,7 @@ All files in this folder are UTF-8 JSON, except this documentation file. Restart
 - `backpack.json` configures the starting backpack.
 - `item_stacks.json` configures stack sizes for backpack items.
 - `icon_mapping.json` maps game ids to PNG filenames in `images/`.
+- `server.json` configures server networking, interest management, output queues and profiling thresholds.
 - `difficulty/*.json` configures world difficulty presets.
 
 ## Items
@@ -225,3 +226,18 @@ Starting items are created as common rarity.
 - loot spawn amount and spawn interval.
 
 Difficulty is applied by the authoritative server in online mode.
+
+## Server Networking
+
+`server.json` controls the optimized online server:
+
+- `network.interest_radius`: radius around each player for high-frequency entities such as zombies, loot, projectiles, grenades, mines and poison pools.
+- `network.building_interest_radius`: larger radius used for building state so doors/interiors arrive before the player reaches them.
+- `network.grid_cell_size`: spatial hash cell size used by interest management.
+- `network.output_queue_packets`: maximum queued outbound packets per client. If a client falls behind, old snapshot packets are dropped and the next snapshot is forced full.
+- `network.full_snapshot_interval_seconds`: how often each client receives a full resync even when delta snapshots are working.
+- `network.write_buffer_high_water` and `network.write_buffer_low_water`: asyncio transport backpressure thresholds.
+- `profiling.log_interval_seconds`: interval for `python -m server.main --profile` metrics.
+- `profiling.slow_tick_ms` and `profiling.slow_snapshot_ms`: reserved thresholds for stricter profiling alerts.
+
+The TCP protocol uses length-prefixed frames. `msgpack` is used when installed; otherwise the same framing falls back to compact JSON. The client supports full snapshots and compact delta snapshots.
