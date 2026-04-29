@@ -17,11 +17,13 @@ def ping_server(host: str, port: int, timeout: float = 0.75) -> tuple[float | No
             sent = time.time()
             sock.sendall(encode_message("ping", sent=sent))
             raw = sock.makefile("rb").readline()
+            if not raw:
+                return None, None
             message = decode_message(raw)
             if message["type"] != "pong":
                 return None, None
             return (time.perf_counter() - started) * 1000.0, message
-    except OSError:
+    except (OSError, ValueError):
         return None, None
 
 
@@ -43,7 +45,13 @@ class OnlineClient:
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         sock.sendall(encode_message("hello", name=name))
         reader = sock.makefile("rb")
-        first = decode_message(reader.readline())
+        raw = reader.readline()
+        if not raw:
+            raise ConnectionError("server closed connection without response")
+        try:
+            first = decode_message(raw)
+        except ValueError:
+            raise ConnectionError("server sent invalid response")
         if first["type"] != "welcome":
             raise ConnectionError(first.get("message", "server refused connection"))
 
