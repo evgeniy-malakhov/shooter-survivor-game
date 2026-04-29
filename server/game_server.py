@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import secrets
 import socket
 import threading
 import time
@@ -11,12 +12,15 @@ from typing import Any, Deque
 
 from server.config import ServerTuning, load_server_tuning
 from server.events import derive_events, filter_events_for_snapshot
+from server.journal import ServerJournal
+from server.persistence import PersistenceWorker
 from server.spatial import SnapshotInterestIndex, filter_snapshot_area, snapshot_with_local_player
 from server.workers import AsyncLogWorker, ServerProfiler
 from shared.constants import SNAPSHOT_RATE, TICK_RATE
 from shared.net_schema import SNAPSHOT_SCHEMA, compact_delta, compact_snapshot
 from shared.models import ClientCommand, InputCommand, PlayerState
 from shared.protocol import FrameDecoder, SERIALIZER_NAME, encode_message
+from shared.protocol_meta import PROTOCOL_VERSION, SERVER_FEATURES, SERVER_VERSION
 from shared.simulation import GameWorld
 from shared.snapshot_delta import make_snapshot_delta
 
@@ -78,6 +82,11 @@ class SimulationRunner:
         self.world.rename_player(player_id, name)
         self._refresh_snapshot()
 
+    def stop_player_input(self, player_id: str) -> None:
+        self.world.set_input(InputCommand(player_id=player_id))
+        with self._input_lock:
+            self._pending_inputs.pop(player_id, None)
+
     def set_input(self, command: InputCommand, sequence: int) -> None:
         with self._input_lock:
             previous = self._pending_inputs.get(command.player_id)
@@ -125,6 +134,26 @@ class SimulationRunner:
 
     def zombie_count(self) -> int:
         return self.world.zombie_count()
+
+    def player_profile(self, player_id: str) -> dict[str, Any] | None:
+        snapshot = self.world.snapshot().to_dict()
+        player = snapshot.get("players", {}).get(player_id) if isinstance(snapshot.get("players"), dict) else None
+        if not isinstance(player, dict):
+            return None
+        return {
+            "player_id": player_id,
+            "position": player.get("pos"),
+            "floor": player.get("floor", 0),
+            "inside_building": player.get("inside_building"),
+            "health": player.get("health", 0),
+            "armor": player.get("armor", 0),
+            "score": player.get("score", 0),
+            "kills_by_kind": player.get("kills_by_kind", {}),
+            "backpack": player.get("backpack", []),
+            "equipment": player.get("equipment", {}),
+            "quick_items": player.get("quick_items", {}),
+            "weapons": player.get("weapons", {}),
+        }
 
     def tick_seconds(self) -> float:
         return self._last_tick_seconds
@@ -299,6 +328,7 @@ class ClientOutputQueue:
 class ClientSession:
     player_id: str
     name: str
+    session_token: str
     protocol: "GameProtocol"
     outbox: ClientOutputQueue
     writer_task: asyncio.Task[None] | None = None
@@ -310,6 +340,19 @@ class ClientSession:
     dropped_snapshots: int = 0
     snapshot_stride: int = 1
     snapshot_skip: int = 0
+    ping_ms: float | None = None
+    last_seen: float = 0.0
+
+
+@dataclass(slots=True)
+class ResumeTicket:
+    player_id: str
+    name: str
+    session_token: str
+    expires_at: float
+    last_input_seq: int = 0
+    last_snapshot_tick: int = 0
+    ping_ms: float | None = None
 
 
 class GameProtocol(asyncio.Protocol):
@@ -378,22 +421,31 @@ class GameServer:
         self.tuning: ServerTuning = load_server_tuning()
         self.simulation = SimulationRunner(difficulty_key, zombie_workers=zombie_workers)
         self.clients: dict[str, ClientSession] = {}
+        self.resume_tickets: dict[str, ResumeTicket] = {}
+        self._player_tokens: dict[str, str] = {}
         self._server: asyncio.AbstractServer | None = None
         self._tasks: list[asyncio.Task[None]] = []
+        self._shutdown_event: asyncio.Event | None = None
+        self._shutdown_requested = False
         self.log_worker = AsyncLogWorker()
+        self.persistence = PersistenceWorker()
+        self.journal = ServerJournal(self.tuning.network.journal_seconds)
         self.profiler = ServerProfiler(enabled=profile)
         self.profile_enabled = profile
         self._event_source_snapshot: dict[str, Any] | None = None
 
     async def start(self) -> None:
         await self.log_worker.start()
+        await self.persistence.start()
         self.simulation.start()
         loop = asyncio.get_running_loop()
         try:
+            self._shutdown_event = asyncio.Event()
             self._server = await loop.create_server(lambda: GameProtocol(self), self.host, self.port)
             self._tasks = [
                 asyncio.create_task(self._snapshot_loop(), name="snapshot-sender"),
                 asyncio.create_task(self._command_result_loop(), name="command-results"),
+                asyncio.create_task(self._resume_cleanup_loop(), name="resume-cleanup"),
             ]
             if self.profile_enabled:
                 self._tasks.append(asyncio.create_task(self._profile_loop(), name="server-profiler"))
@@ -402,9 +454,15 @@ class GameServer:
                 f"Neon Outbreak server listening on {sockets} [{self.difficulty_key}] "
                 f"codec={SERIALIZER_NAME} tick={TICK_RATE}Hz snapshots={SNAPSHOT_RATE}Hz"
             )
+            self.persistence.record_session("server_started", host=self.host, port=self.port, difficulty=self.difficulty_key)
             async with self._server:
-                await self._server.serve_forever()
+                await self._shutdown_event.wait()
         finally:
+            self.persistence.record_session("server_stopping", active_clients=len(self.clients), resume_tickets=len(self.resume_tickets))
+            for session in list(self.clients.values()):
+                self._persist_player_profile(session.player_id)
+            for ticket in list(self.resume_tickets.values()):
+                self._persist_player_profile(ticket.player_id)
             for task in self._tasks:
                 task.cancel()
             if self._tasks:
@@ -416,7 +474,31 @@ class GameServer:
                     session.writer_task.cancel()
             self.clients.clear()
             self.simulation.stop()
+            await self.persistence.stop()
             await self.log_worker.stop()
+
+    def request_shutdown(self, reason: str = "shutdown") -> None:
+        if self._shutdown_requested:
+            return
+        self._shutdown_requested = True
+        if self._server:
+            self._server.close()
+        for session in list(self.clients.values()):
+            self._queue_events(
+                session,
+                self.simulation.snapshot().tick,
+                float(self.simulation.snapshot().data.get("time", 0.0)),
+                [{"kind": "server_shutdown", "reason": reason}],
+            )
+        self.persistence.record_session("server_shutdown_requested", reason=reason)
+        asyncio.create_task(self._finish_shutdown())
+
+    async def _finish_shutdown(self) -> None:
+        await asyncio.sleep(0.35)
+        for session in list(self.clients.values()):
+            session.protocol.close()
+        if self._shutdown_event:
+            self._shutdown_event.set()
 
     def handle_message(self, protocol: GameProtocol, message: dict[str, Any]) -> None:
         message_type = str(message.get("type", ""))
@@ -426,6 +508,9 @@ class GameServer:
                 return
             if message_type == "hello":
                 self._accept_player(protocol, message)
+                return
+            if message_type == "resume":
+                self._resume_player(protocol, message)
                 return
             self.reject(protocol, "expected hello")
             return
@@ -443,7 +528,7 @@ class GameServer:
             session.name = name
             self.simulation.rename_player(session.player_id, name)
         elif message_type == "ping":
-            self._queue_control(session, "pong", **self._ping_payload(message))
+            self._handle_session_ping(session, message)
 
     def protocol_lost(self, protocol: GameProtocol) -> None:
         player_id = protocol.player_id
@@ -455,8 +540,24 @@ class GameServer:
         session.outbox.close()
         if session.writer_task:
             session.writer_task.cancel()
-        self.simulation.remove_player(player_id)
-        self.log_worker.info(f"player disconnected: {player_id}")
+        expires_at = time.monotonic() + self.tuning.network.resume_timeout_seconds
+        self.resume_tickets[player_id] = ResumeTicket(
+            player_id=player_id,
+            name=session.name,
+            session_token=session.session_token,
+            expires_at=expires_at,
+            last_input_seq=session.last_received_input_seq,
+            last_snapshot_tick=session.last_snapshot_tick,
+            ping_ms=session.ping_ms,
+        )
+        self.simulation.stop_player_input(player_id)
+        self._persist_player_profile(player_id)
+        self.persistence.record_session(
+            "player_disconnected",
+            player_id=player_id,
+            resume_until=time.time() + self.tuning.network.resume_timeout_seconds,
+        )
+        self.log_worker.info(f"player disconnected: {player_id}, resume window {self.tuning.network.resume_timeout_seconds:.0f}s")
 
     def reject(self, protocol: GameProtocol, message: str) -> None:
         with contextlib.suppress(ValueError, RuntimeError, OSError):
@@ -464,14 +565,22 @@ class GameServer:
         asyncio.get_running_loop().call_later(0.05, protocol.close)
 
     def _accept_player(self, protocol: GameProtocol, message: dict[str, Any]) -> None:
+        if self._shutdown_requested:
+            self.reject(protocol, "server is shutting down")
+            return
+        if not self._handshake_ok(protocol, message):
+            return
         name = str(message.get("name", "Player"))[:18]
         player, snapshot = self.simulation.add_player(name)
+        session_token = secrets.token_urlsafe(32)
+        self._player_tokens[player.id] = session_token
         outbox = ClientOutputQueue(self.tuning.network.output_queue_packets)
-        session = ClientSession(player.id, name, protocol, outbox)
+        session = ClientSession(player.id, name, session_token, protocol, outbox, last_seen=time.monotonic())
         protocol.player_id = player.id
         self.clients[player.id] = session
         session.writer_task = asyncio.create_task(self._writer_loop(session), name=f"writer-{player.id}")
-        filtered = self._filter_snapshot(snapshot.data, player.id)
+        snapshot_data = self._snapshot_with_network_stats(snapshot.data)
+        filtered = self._filter_snapshot(snapshot_data, player.id)
         session.last_snapshot = filtered
         session.last_snapshot_tick = snapshot.tick
         session.snapshots_since_full = 0
@@ -479,6 +588,8 @@ class GameServer:
             session,
             "welcome",
             player_id=player.id,
+            session_token=session_token,
+            resume_timeout=self.tuning.network.resume_timeout_seconds,
             snapshot=compact_snapshot(filtered, player.id),
             schema=SNAPSHOT_SCHEMA,
             tick=snapshot.tick,
@@ -487,10 +598,99 @@ class GameServer:
             server_time=float(filtered.get("time", 0.0)),
             snapshot_interval=1.0 / SNAPSHOT_RATE,
             codec=SERIALIZER_NAME,
+            protocol_version=PROTOCOL_VERSION,
+            snapshot_schema=SNAPSHOT_SCHEMA,
+            server_version=SERVER_VERSION,
+            server_features=SERVER_FEATURES,
         )
         self.log_worker.info(f"player connected: {name} ({player.id})")
+        self.persistence.record_session("player_connected", player_id=player.id, name=name)
+
+    def _resume_player(self, protocol: GameProtocol, message: dict[str, Any]) -> None:
+        if self._shutdown_requested:
+            self.reject(protocol, "server is shutting down")
+            return
+        if not self._handshake_ok(protocol, message):
+            return
+        player_id = str(message.get("player_id", ""))
+        token = str(message.get("session_token", ""))
+        ticket = self.resume_tickets.get(player_id)
+        if not ticket or ticket.session_token != token or ticket.expires_at < time.monotonic():
+            self.reject(protocol, "resume expired")
+            return
+        if player_id in self.clients:
+            self.reject(protocol, "session already connected")
+            return
+        snapshot = self.simulation.snapshot()
+        snapshot_data = self._snapshot_with_network_stats(snapshot.data)
+        if player_id not in snapshot_data.get("players", {}):
+            self.reject(protocol, "player no longer exists")
+            return
+        outbox = ClientOutputQueue(self.tuning.network.output_queue_packets)
+        session = ClientSession(
+            player_id,
+            ticket.name,
+            token,
+            protocol,
+            outbox,
+            last_received_input_seq=ticket.last_input_seq,
+            ping_ms=ticket.ping_ms,
+            last_seen=time.monotonic(),
+        )
+        protocol.player_id = player_id
+        self.clients[player_id] = session
+        self.resume_tickets.pop(player_id, None)
+        session.writer_task = asyncio.create_task(self._writer_loop(session), name=f"writer-{player_id}")
+        filtered = self._filter_snapshot(snapshot_data, player_id)
+        session.last_snapshot = filtered
+        session.last_snapshot_tick = snapshot.tick
+        self._queue_control(
+            session,
+            "welcome",
+            resumed=True,
+            player_id=player_id,
+            session_token=token,
+            resume_timeout=self.tuning.network.resume_timeout_seconds,
+            snapshot=compact_snapshot(filtered, player_id),
+            schema=SNAPSHOT_SCHEMA,
+            tick=snapshot.tick,
+            seq=0,
+            ack_input_seq=self.simulation.ack_input_seq(player_id),
+            server_time=float(filtered.get("time", 0.0)),
+            snapshot_interval=1.0 / SNAPSHOT_RATE,
+            codec=SERIALIZER_NAME,
+            protocol_version=PROTOCOL_VERSION,
+            snapshot_schema=SNAPSHOT_SCHEMA,
+            server_version=SERVER_VERSION,
+            server_features=SERVER_FEATURES,
+        )
+        last_tick = int(message.get("last_snapshot_tick", 0))
+        results, events = self.journal.replay_for_player(player_id, last_tick)
+        for result in results:
+            payload = dict(result)
+            payload.pop("player_id", None)
+            self._queue_control(session, "command_result", replay=True, **payload)
+        if events:
+            self._queue_events(session, snapshot.tick, float(filtered.get("time", 0.0)), events)
+        self.persistence.record_session("player_resumed", player_id=player_id, name=ticket.name)
+        self.log_worker.info(f"player resumed: {ticket.name} ({player_id})")
+
+    def _handshake_ok(self, protocol: GameProtocol, message: dict[str, Any]) -> bool:
+        try:
+            protocol_version = int(message.get("protocol_version", 0))
+        except (TypeError, ValueError):
+            protocol_version = 0
+        snapshot_schema = str(message.get("snapshot_schema", SNAPSHOT_SCHEMA))
+        if protocol_version != PROTOCOL_VERSION:
+            self.reject(protocol, f"unsupported protocol version {message.get('protocol_version')}")
+            return False
+        if snapshot_schema != SNAPSHOT_SCHEMA:
+            self.reject(protocol, "unsupported snapshot schema")
+            return False
+        return True
 
     def _handle_input(self, session: ClientSession, message: dict[str, Any]) -> None:
+        session.last_seen = time.monotonic()
         try:
             sequence = int(message.get("seq", 0))
         except (TypeError, ValueError):
@@ -514,6 +714,7 @@ class GameServer:
         self.simulation.set_input(command, sequence)
 
     def _handle_command(self, session: ClientSession, message: dict[str, Any]) -> None:
+        session.last_seen = time.monotonic()
         try:
             command_id = int(message.get("command_id", 0))
         except (TypeError, ValueError):
@@ -527,31 +728,61 @@ class GameServer:
             payload=payload if isinstance(payload, dict) else {},
         )
         if command.command_id <= 0 or not command.kind:
-            self._queue_control(
-                session,
+            result = {
+                "player_id": session.player_id,
+                "command_id": command.command_id,
+                "kind": command.kind,
+                "ok": False,
+                "reason": "invalid_command",
+                "server_tick": self.simulation.snapshot().tick,
+            }
+            self.journal.append_command_result(result)
+            self.persistence.record_match_event(
                 "command_result",
-                command_id=command.command_id,
-                kind=command.kind,
+                player_id=result["player_id"],
+                command_id=result["command_id"],
+                kind=result["kind"],
                 ok=False,
-                reason="invalid_command",
-                server_tick=self.simulation.snapshot().tick,
+                reason=result["reason"],
+                tick=result["server_tick"],
             )
+            payload = dict(result)
+            payload.pop("player_id", None)
+            self._queue_control(session, "command_result", **payload)
             return
         accepted, reason = self.simulation.queue_command(command)
         if not accepted:
-            self._queue_control(
-                session,
+            result = {
+                "player_id": session.player_id,
+                "command_id": command.command_id,
+                "kind": command.kind,
+                "ok": False,
+                "reason": reason,
+                "server_tick": self.simulation.snapshot().tick,
+            }
+            self.journal.append_command_result(result)
+            self.persistence.record_match_event(
                 "command_result",
-                command_id=command.command_id,
-                kind=command.kind,
+                player_id=result["player_id"],
+                command_id=result["command_id"],
+                kind=result["kind"],
                 ok=False,
-                reason=reason,
-                server_tick=self.simulation.snapshot().tick,
+                reason=result["reason"],
+                tick=result["server_tick"],
             )
+            payload = dict(result)
+            payload.pop("player_id", None)
+            self._queue_control(session, "command_result", **payload)
 
     def _send_ping(self, protocol: GameProtocol, message: dict[str, Any]) -> None:
         protocol.write(encode_message("pong", **self._ping_payload(message)))
         asyncio.get_running_loop().call_later(0.05, protocol.close)
+
+    def _handle_session_ping(self, session: ClientSession, message: dict[str, Any]) -> None:
+        session.last_seen = time.monotonic()
+        with contextlib.suppress(TypeError, ValueError):
+            session.ping_ms = max(0.0, float(message.get("client_ping_ms")))
+        self._queue_control(session, "pong", **self._ping_payload(message))
 
     def _ping_payload(self, message: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -564,7 +795,11 @@ class GameServer:
             "snapshot_rate": SNAPSHOT_RATE,
             "codec": SERIALIZER_NAME,
             "protocol": "tcp-frame-v4",
+            "protocol_version": PROTOCOL_VERSION,
             "snapshot_schema": SNAPSHOT_SCHEMA,
+            "server_version": SERVER_VERSION,
+            "server_features": SERVER_FEATURES,
+            "resume_timeout": self.tuning.network.resume_timeout_seconds,
         }
 
     async def _writer_loop(self, session: ClientSession) -> None:
@@ -591,9 +826,27 @@ class GameServer:
                 continue
             started = time.perf_counter()
             snapshot = self.simulation.snapshot()
-            index = SnapshotInterestIndex(snapshot.data, self.tuning.network.grid_cell_size)
-            events = derive_events(self._event_source_snapshot, snapshot.data, snapshot.tick)
-            self._event_source_snapshot = snapshot.data
+            snapshot_data = self._snapshot_with_network_stats(snapshot.data)
+            self.journal.append_snapshot_meta(
+                snapshot.tick,
+                {
+                    "tick": snapshot.tick,
+                    "server_time": snapshot_data.get("time", 0.0),
+                    "active_clients": len(self.clients),
+                    "resume_tickets": len(self.resume_tickets),
+                },
+            )
+            index = SnapshotInterestIndex(snapshot_data, self.tuning.network.grid_cell_size)
+            events = derive_events(self._event_source_snapshot, snapshot_data, snapshot.tick)
+            for event in events:
+                self.journal.append_event(event, snapshot.tick)
+                self.persistence.record_match_event(
+                    "snapshot_event",
+                    tick=snapshot.tick,
+                    kind=event.get("kind", "unknown"),
+                    payload=event,
+                )
+            self._event_source_snapshot = snapshot_data
             area_cache: dict[tuple[int, int, int, str], dict[str, Any]] = {}
             for session in list(self.clients.values()):
                 if snapshot.tick <= session.last_snapshot_tick:
@@ -605,13 +858,13 @@ class GameServer:
                         continue
                 else:
                     session.snapshot_skip = 0
-                bucket = self._interest_bucket(snapshot.data, session.player_id)
+                bucket = self._interest_bucket(snapshot_data, session.player_id)
                 if bucket not in area_cache:
                     floor, cell_x, cell_y, inside = bucket
                     center_x = cell_x * self.tuning.network.grid_cell_size + self.tuning.network.grid_cell_size * 0.5
                     center_y = cell_y * self.tuning.network.grid_cell_size + self.tuning.network.grid_cell_size * 0.5
                     area_cache[bucket] = filter_snapshot_area(
-                        snapshot.data,
+                        snapshot_data,
                         index,
                         center_x,
                         center_y,
@@ -620,17 +873,27 @@ class GameServer:
                         self.tuning.network.interest_radius + self.tuning.network.grid_cell_size * 0.75,
                         self.tuning.network.building_interest_radius + self.tuning.network.grid_cell_size * 0.75,
                     )
-                filtered = snapshot_with_local_player(area_cache[bucket], snapshot.data, session.player_id)
+                filtered = snapshot_with_local_player(area_cache[bucket], snapshot_data, session.player_id)
                 self._queue_snapshot(session, filtered, snapshot.tick)
                 visible_events = filter_events_for_snapshot(events, filtered, session.player_id)
                 if visible_events:
-                    self._queue_events(session, snapshot.tick, float(snapshot.data.get("time", 0.0)), visible_events)
+                    self._queue_events(session, snapshot.tick, float(snapshot_data.get("time", 0.0)), visible_events)
             self.profiler.record("snapshot_loop", time.perf_counter() - started)
 
     async def _command_result_loop(self) -> None:
         while True:
             await asyncio.sleep(0.01)
             for result in self.simulation.drain_command_results():
+                self.journal.append_command_result(result)
+                self.persistence.record_match_event(
+                    "command_result",
+                    player_id=result.get("player_id"),
+                    command_id=result.get("command_id"),
+                    kind=result.get("kind"),
+                    ok=result.get("ok"),
+                    reason=result.get("reason", ""),
+                    tick=result.get("server_tick", 0),
+                )
                 player_id = str(result.get("player_id", ""))
                 session = self.clients.get(player_id)
                 if not session:
@@ -639,6 +902,14 @@ class GameServer:
                 payload.pop("player_id", None)
                 self._queue_control(session, "command_result", **payload)
             for event in self.simulation.drain_domain_events():
+                self.journal.append_event(event, int(event.get("server_tick", self.simulation.snapshot().tick)))
+                self.persistence.record_match_event(
+                    "domain_event",
+                    player_id=event.get("player_id"),
+                    kind=event.get("kind", "unknown"),
+                    tick=event.get("server_tick", self.simulation.snapshot().tick),
+                    payload=event,
+                )
                 player_id = str(event.get("player_id", ""))
                 session = self.clients.get(player_id)
                 if not session:
@@ -646,6 +917,20 @@ class GameServer:
                 tick = int(event.get("server_tick", self.simulation.snapshot().tick))
                 server_time = float(event.get("time", self.simulation.snapshot().data.get("time", 0.0)))
                 self._queue_events(session, tick, server_time, [event])
+
+    async def _resume_cleanup_loop(self) -> None:
+        while True:
+            await asyncio.sleep(1.0)
+            now = time.monotonic()
+            expired = [player_id for player_id, ticket in self.resume_tickets.items() if ticket.expires_at <= now]
+            for player_id in expired:
+                ticket = self.resume_tickets.pop(player_id, None)
+                if not ticket:
+                    continue
+                self._persist_player_profile(player_id)
+                self.simulation.remove_player(player_id)
+                self.persistence.record_session("resume_expired", player_id=player_id, name=ticket.name)
+                self.log_worker.info(f"resume expired: {ticket.name} ({player_id})")
 
     def _filter_snapshot(self, snapshot: dict[str, Any], player_id: str) -> dict[str, Any]:
         index = SnapshotInterestIndex(snapshot, self.tuning.network.grid_cell_size)
@@ -663,6 +948,33 @@ class GameServer:
             self.tuning.network.building_interest_radius + self.tuning.network.grid_cell_size * 0.75,
         )
         return snapshot_with_local_player(area, snapshot, player_id)
+
+    def _snapshot_with_network_stats(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        players = snapshot.get("players")
+        if not isinstance(players, dict):
+            return snapshot
+        patched = dict(snapshot)
+        patched_players: dict[str, Any] = {}
+        for player_id, player in players.items():
+            if not isinstance(player, dict):
+                continue
+            data = dict(player)
+            session = self.clients.get(player_id)
+            ticket = self.resume_tickets.get(player_id)
+            if session:
+                ping_ms = int(min(9999, round(session.ping_ms or 0)))
+                data["ping_ms"] = ping_ms
+                data["connection_quality"] = _connection_quality(ping_ms, time.monotonic() - session.last_seen)
+            elif ticket:
+                ping_ms = int(min(9999, round(ticket.ping_ms or 0)))
+                data["ping_ms"] = ping_ms
+                data["connection_quality"] = "lost"
+            else:
+                data["ping_ms"] = int(data.get("ping_ms", 0))
+                data["connection_quality"] = data.get("connection_quality", "stable")
+            patched_players[player_id] = data
+        patched["players"] = patched_players
+        return patched
 
     def _interest_bucket(self, snapshot: dict[str, Any], player_id: str) -> tuple[int, int, int, str]:
         players = snapshot.get("players", {})
@@ -758,6 +1070,11 @@ class GameServer:
             channel="reliable",
         )
 
+    def _persist_player_profile(self, player_id: str) -> None:
+        profile = self.simulation.player_profile(player_id)
+        if profile:
+            self.persistence.save_player_profile(player_id, profile)
+
     async def _profile_loop(self) -> None:
         delay = self.tuning.profiling.log_interval_seconds
         while True:
@@ -771,3 +1088,13 @@ class GameServer:
                     f"profile {summary} | tick={tick_ms:.2f}ms clients={len(self.clients)} "
                     f"queued={queued} dropped_snapshots={dropped}"
                 )
+
+
+def _connection_quality(ping_ms: int, silence_seconds: float) -> str:
+    if silence_seconds > 3.0:
+        return "lost"
+    if silence_seconds > 1.2 or ping_ms >= 1000:
+        return "packet-lost"
+    if ping_ms >= 350:
+        return "unstable"
+    return "stable"

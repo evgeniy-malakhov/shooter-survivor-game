@@ -323,6 +323,8 @@ class PlayerState:
     poison_damage: int = 0
     notice: str = ""
     notice_timer: float = 0.0
+    ping_ms: int = 0
+    connection_quality: str = "stable"
     weapons: dict[str, WeaponRuntime] = field(default_factory=dict)
 
     def active_weapon(self) -> WeaponRuntime | None:
@@ -360,6 +362,8 @@ class PlayerState:
             "poison_damage": self.poison_damage,
             "notice": self.notice,
             "notice_timer": round(self.notice_timer, 3),
+            "ping_ms": self.ping_ms,
+            "connection_quality": self.connection_quality,
             "weapons": {slot: weapon.to_dict() for slot, weapon in self.weapons.items()},
         }
 
@@ -402,6 +406,8 @@ class PlayerState:
             poison_damage=int(data.get("poison_damage", 0)),
             notice=str(data.get("notice", "")),
             notice_timer=float(data.get("notice_timer", 0.0)),
+            ping_ms=int(data.get("ping_ms", 0)),
+            connection_quality=str(data.get("connection_quality", "stable")),
         )
         player.weapons = {
             str(slot): WeaponRuntime.from_dict(weapon)

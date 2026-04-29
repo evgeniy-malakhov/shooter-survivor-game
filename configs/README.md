@@ -236,11 +236,15 @@ Difficulty is applied by the authoritative server in online mode.
 - `network.grid_cell_size`: spatial hash cell size used by interest management.
 - `network.output_queue_packets`: maximum queued outbound packets per client. If a client falls behind, old snapshot packets are dropped and the next snapshot is forced full.
 - `network.full_snapshot_interval_seconds`: how often each client receives a full resync even when delta snapshots are working.
+- `network.resume_timeout_seconds`: how long a disconnected player remains in the world and can resume with the same `session_token`.
+- `network.journal_seconds`: retention window for recent command results, gameplay events and snapshot metadata used by reconnect/replay diagnostics.
 - `network.write_buffer_high_water` and `network.write_buffer_low_water`: asyncio transport backpressure thresholds.
 - `profiling.log_interval_seconds`: interval for `python -m server.main --profile` metrics.
 - `profiling.slow_tick_ms` and `profiling.slow_snapshot_ms`: reserved thresholds for stricter profiling alerts.
 
 The TCP protocol uses length-prefixed frames. `msgpack` is used when installed; otherwise the same framing falls back to compact JSON. Snapshot packets are treated as lossy/unreliable inside the server queue, so stale snapshots can be dropped for slow clients. Login, profile updates, transactional commands, pings, command results and gameplay events stay on the reliable queue.
+
+Clients start with a versioned `hello` handshake containing `client_version`, `protocol_version`, `snapshot_schema` and supported features. The server answers with `welcome`, including `session_token`, `resume_timeout`, server features and a full snapshot. After a short connection drop, the client sends `resume` with `player_id`, `session_token` and `last_snapshot_tick`; the server restores the same player when the token is still valid.
 
 Snapshot messages include:
 
@@ -262,3 +266,11 @@ Movement input and gameplay commands are intentionally separate:
 - `command_result`: authoritative result for exactly one command, including `ok`, `reason` when rejected, and `server_tick`.
 
 Current command kinds include `pickup`, `interact`, `inventory_action`, `craft`, `repair`, `equip_armor`, `select_slot`, `reload`, `throw_grenade`, `toggle_utility`, `use_medkit` and `respawn`. Movement input may be overwritten by a newer input before the next simulation tick; commands are queued and processed in order.
+
+The server keeps short command/event/snapshot journals for resume replay and desync debugging. Persistent records are written by a background worker into `server_data/` as JSON/JSONL files, outside the game tick:
+
+- `player_profiles.json`: latest player position, stats, inventory, equipment and weapons.
+- `session_history.jsonl`: connect, disconnect, resume and shutdown history.
+- `match_events.jsonl`: command results and gameplay events.
+
+On SIGTERM/SIGINT-capable platforms, the server stops accepting new clients, sends `server_shutdown`, saves active player profiles and closes connections cleanly.

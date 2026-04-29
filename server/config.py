@@ -16,6 +16,8 @@ class NetworkTuning:
     grid_cell_size: float = 512.0
     output_queue_packets: int = 64
     full_snapshot_interval_seconds: float = 5.0
+    resume_timeout_seconds: float = 30.0
+    journal_seconds: float = 10.0
     write_buffer_high_water: int = 262_144
     write_buffer_low_water: int = 65_536
 
@@ -62,6 +64,8 @@ def _load_network(raw: Any) -> NetworkTuning:
             fallback.full_snapshot_interval_seconds,
             minimum=1.0,
         ),
+        resume_timeout_seconds=_float(data, "resume_timeout_seconds", fallback.resume_timeout_seconds, minimum=5.0),
+        journal_seconds=_float(data, "journal_seconds", fallback.journal_seconds, minimum=3.0),
         write_buffer_high_water=_int(data, "write_buffer_high_water", fallback.write_buffer_high_water, minimum=32_768),
         write_buffer_low_water=_int(data, "write_buffer_low_water", fallback.write_buffer_low_water, minimum=16_384),
     )

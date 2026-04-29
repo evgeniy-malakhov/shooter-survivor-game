@@ -190,6 +190,8 @@ def _pack_player(entity: dict[str, Any]) -> list[Any]:
         1 if entity.get("sneaking", False) else 0,
         _q(entity.get("poison_left"), 1000),
         _active_weapon_payload(entity),
+        int(entity.get("ping_ms", 0)),
+        entity.get("connection_quality", "stable"),
     ]
 
 
@@ -216,6 +218,8 @@ def _unpack_player(row: list[Any]) -> dict[str, Any]:
         "sneaking": bool(_get(row, 16, 0)),
         "poison_left": _uq(_get(row, 17, 0), 1000),
         "weapons": weapons,
+        "ping_ms": int(_get(row, 19, 0)),
+        "connection_quality": str(_get(row, 20, "stable")),
     }
 
 

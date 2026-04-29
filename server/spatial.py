@@ -176,6 +176,8 @@ def _public_player(player: dict[str, Any], include_weapon: bool) -> dict[str, An
         "inside_building",
         "sneaking",
         "poison_left",
+        "ping_ms",
+        "connection_quality",
     )
     public = {key: player[key] for key in keys if key in player}
     if include_weapon:

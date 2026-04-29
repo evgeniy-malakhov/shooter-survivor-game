@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import signal
 
 from server.game_server import GameServer
 from shared.difficulty import DIFFICULTY_KEYS
@@ -26,17 +27,24 @@ def main() -> None:
         raise SystemExit("UDP transport is planned, but this build currently runs the optimized TCP protocol.")
     _install_uvloop(disabled=args.no_uvloop)
     try:
-        asyncio.run(
-            GameServer(
-                args.host,
-                args.port,
-                args.difficulty,
-                profile=args.profile,
-                zombie_workers=args.zombie_workers,
-            ).start()
-        )
+        asyncio.run(_run_server(args))
     except KeyboardInterrupt:
         print("Server stopped.")
+
+
+async def _run_server(args: argparse.Namespace) -> None:
+    server = GameServer(
+        args.host,
+        args.port,
+        args.difficulty,
+        profile=args.profile,
+        zombie_workers=args.zombie_workers,
+    )
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        with contextlib.suppress(NotImplementedError, RuntimeError, ValueError):
+            loop.add_signal_handler(sig, server.request_shutdown, sig.name.lower())
+    await server.start()
 
 
 def _install_uvloop(disabled: bool) -> None:
