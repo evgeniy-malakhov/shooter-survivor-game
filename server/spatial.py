@@ -101,6 +101,40 @@ def filter_snapshot_for_player(
     return filtered
 
 
+def filter_snapshot_area(
+    snapshot: dict[str, Any],
+    index: SnapshotInterestIndex,
+    x: float,
+    y: float,
+    floor: int,
+    inside_building: object,
+    interest_radius: float,
+    building_radius: float,
+) -> dict[str, Any]:
+    filtered: dict[str, Any] = {
+        "time": snapshot.get("time", 0.0),
+        "map_width": snapshot.get("map_width", 1),
+        "map_height": snapshot.get("map_height", 1),
+        "players": _filter_players(_collection(snapshot, "players"), "", interest_radius, x, y, floor),
+        "buildings": _filter_buildings(_collection(snapshot, "buildings"), x, y, inside_building, building_radius),
+    }
+    for collection in POSITION_COLLECTIONS:
+        source = _collection(snapshot, collection)
+        entity_ids = index.query(collection, x, y, interest_radius, floor)
+        filtered[collection] = {entity_id: source[entity_id] for entity_id in entity_ids if entity_id in source}
+    return filtered
+
+
+def snapshot_with_local_player(area_snapshot: dict[str, Any], full_snapshot: dict[str, Any], player_id: str) -> dict[str, Any]:
+    filtered = dict(area_snapshot)
+    players = dict(_collection(area_snapshot, "players"))
+    local = _collection(full_snapshot, "players").get(player_id)
+    if isinstance(local, dict):
+        players[player_id] = local
+    filtered["players"] = players
+    return filtered
+
+
 def _filter_players(
     players: dict[str, Any],
     local_id: str,

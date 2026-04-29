@@ -4,8 +4,10 @@ import math
 import os
 import random
 import threading
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
+from typing import Any, Deque
 
 from shared.constants import (
     ARMORS,
@@ -37,6 +39,7 @@ from shared.rarities import RARITIES, rarity_rank, rarity_spec
 from shared.weapon_modules import WEAPON_MODULES
 from shared.models import (
     BuildingState,
+    ClientCommand,
     GrenadeState,
     InputCommand,
     InventoryItem,
@@ -70,6 +73,22 @@ class _ZombieUpdateResult:
     poison_spits: list[_PoisonSpitEvent]
 
 
+_COMMAND_EVENT_NAMES = {
+    "pickup": "pickup_succeeded",
+    "interact": "interact_succeeded",
+    "inventory_action": "inventory_changed",
+    "craft": "craft_finished",
+    "repair": "repair_finished",
+    "equip_armor": "armor_equipped",
+    "select_slot": "slot_selected",
+    "reload": "reload_started",
+    "throw_grenade": "explosive_used",
+    "toggle_utility": "utility_toggled",
+    "use_medkit": "medkit_used",
+    "respawn": "player_respawned",
+}
+
+
 class GameWorld:
     def __init__(
         self,
@@ -96,6 +115,7 @@ class GameWorld:
         self.poison_pools: dict[str, PoisonPoolState] = {}
         self.loot: dict[str, LootState] = {}
         self.inputs: dict[str, InputCommand] = {}
+        self._domain_events: Deque[dict[str, Any]] = deque()
         self._grenade_cooldowns: dict[str, float] = {}
         self.buildings: dict[str, BuildingState] = make_buildings()
         self._next_id = 1
@@ -189,6 +209,113 @@ class GameWorld:
         with self._lock:
             if command.player_id in self.players:
                 self.inputs[command.player_id] = command
+
+    def apply_client_command(self, command: ClientCommand) -> tuple[bool, str]:
+        with self._lock:
+            player = self.players.get(command.player_id)
+            if not player:
+                return False, "player_missing"
+            ok, reason = self._apply_client_command_unlocked(player, command)
+            self._push_command_event(command, ok, reason)
+            return ok, reason
+
+    def drain_domain_events(self) -> list[dict[str, Any]]:
+        with self._lock:
+            events = list(self._domain_events)
+            self._domain_events.clear()
+            return events
+
+    def _push_command_event(self, command: ClientCommand, ok: bool, reason: str) -> None:
+        event_kind = _COMMAND_EVENT_NAMES.get(command.kind, command.kind)
+        self._domain_events.append(
+            {
+                "kind": event_kind if ok else f"{command.kind}_rejected",
+                "player_id": command.player_id,
+                "command_id": command.command_id,
+                "command_kind": command.kind,
+                "ok": ok,
+                "reason": reason,
+                "time": round(self.time, 3),
+            }
+        )
+
+    def _apply_client_command_unlocked(self, player: PlayerState, command: ClientCommand) -> tuple[bool, str]:
+        kind = command.kind
+        payload = command.payload
+        if kind == "respawn":
+            if player.alive:
+                return False, "already_alive"
+            self.respawn_player(player.id)
+            return True, ""
+        if not player.alive:
+            return False, "player_dead"
+        if kind == "select_slot":
+            slot = str(payload.get("slot", ""))
+            if slot not in SLOTS:
+                return False, "invalid_slot"
+            player.active_slot = slot
+            return True, ""
+        if kind == "equip_armor":
+            armor_key = str(payload.get("armor_key", ""))
+            if armor_key not in ARMORS:
+                return False, "invalid_armor"
+            self._equip_armor(player, armor_key)
+            return True, ""
+        if kind == "use_medkit":
+            if player.medkits <= 0:
+                return False, "no_medkit"
+            if player.health >= 100:
+                return False, "health_full"
+            player.medkits -= 1
+            player.health = min(100, player.health + 42)
+            return True, ""
+        if kind == "inventory_action":
+            action = payload.get("action", payload)
+            if not isinstance(action, dict):
+                return False, "invalid_payload"
+            self._apply_inventory_action(player, action)
+            return True, ""
+        if kind == "craft":
+            recipe_key = str(payload.get("key", ""))
+            if not recipe_key:
+                return False, "invalid_recipe"
+            self._craft(player, recipe_key)
+            return True, ""
+        if kind == "repair":
+            slot = str(payload.get("slot", ""))
+            if not slot:
+                return False, "invalid_slot"
+            self._repair_armor(player, slot)
+            return True, ""
+        if kind == "pickup":
+            before = len(self.loot)
+            nearby = self._nearest_loot(player) is not None
+            if not nearby:
+                return False, "no_item_nearby"
+            self._pickup_nearby(player)
+            return (len(self.loot) < before), "" if len(self.loot) < before else "pickup_rejected"
+        if kind == "interact":
+            return (True, "") if self._interact(player) else (False, "nothing_to_interact")
+        if kind == "toggle_utility":
+            weapon = player.active_weapon()
+            if not weapon or weapon.modules.get("utility") not in {"laser_module", "flashlight_module"}:
+                return False, "no_utility_module"
+            self._toggle_weapon_utility(player)
+            return True, ""
+        if kind == "reload":
+            weapon = player.active_weapon()
+            if not weapon:
+                return False, "no_weapon"
+            if weapon.reserve_ammo <= 0 or weapon.ammo_in_mag >= self._weapon_magazine_size(weapon):
+                return False, "cannot_reload"
+            self._start_reload(player)
+            return True, ""
+        if kind == "throw_grenade":
+            if self._grenade_cooldowns.get(player.id, 0.0) > 0:
+                return False, "cooldown"
+            self._throw_grenade(player)
+            return True, ""
+        return False, "unknown_command"
 
     def update(self, dt: float) -> None:
         with self._lock:
@@ -1451,15 +1578,7 @@ class GameWorld:
                 self._damage_player(player, damage)
 
     def _pickup_nearby(self, player: PlayerState) -> None:
-        closest = None
-        closest_distance = PICKUP_RADIUS
-        for item in self.loot.values():
-            if item.floor != player.floor:
-                continue
-            distance = player.pos.distance_to(item.pos)
-            if distance <= closest_distance:
-                closest = item
-                closest_distance = distance
+        closest = self._nearest_loot(player)
         if not closest:
             return
 
@@ -1509,6 +1628,18 @@ class GameWorld:
                 return
 
         self.loot.pop(closest.id, None)
+
+    def _nearest_loot(self, player: PlayerState) -> LootState | None:
+        closest = None
+        closest_distance = PICKUP_RADIUS
+        for item in self.loot.values():
+            if item.floor != player.floor:
+                continue
+            distance = player.pos.distance_to(item.pos)
+            if distance <= closest_distance:
+                closest = item
+                closest_distance = distance
+        return closest
 
     def _interact(self, player: PlayerState) -> bool:
         door = nearest_door(self.buildings, player.pos, INTERACT_RADIUS, player.floor)

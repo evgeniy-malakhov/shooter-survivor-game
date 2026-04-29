@@ -24,7 +24,9 @@ Top-down shooter prototype in Python with a shared simulation core for single-pl
 - Main-menu visual settings with bot density and difficulty presets for new single-player runs.
 - Difficulty balance files in `configs/difficulty/` control zombie stats, weapon damage, equipment wear, spawn pacing and loot volume.
 - JSON localization files in `locales/` for English and Russian UI text.
-- Optimized TCP protocol based on asyncio Protocol, length-prefixed frames, optional msgpack encoding, per-client output queues, interest filtering and delta snapshots.
+- Optimized TCP protocol based on asyncio Protocol, length-prefixed frames, optional msgpack encoding, per-client output queues, logical reliable/unreliable channels, interest filtering and compact delta snapshots.
+- Online netcode supports input acknowledgement, client-side prediction, reconciliation and interpolation buffering for smoother remote entities.
+- Gameplay events are streamed separately from state snapshots for effects such as shots, hits, deaths, explosions, pickups and transactional command results.
 
 ## Install
 
@@ -78,7 +80,7 @@ Servers are configured in [servers.json](servers.json). Add more entries like th
 
 Server difficulty can be `easy`, `medium`, `hard` or `insane`. In online mode the server owns the world balance.
 
-Server networking is configured in `configs/server.json`. The current online protocol uses optimized TCP frames. UDP is exposed as a reserved launch option for future protocol work, but the playable server currently runs on TCP.
+Server networking is configured in `configs/server.json`. The current online protocol uses optimized TCP frames with compact snapshot schema `compact-v1`. UDP is exposed as a reserved launch option for future protocol work, but the playable server currently runs on TCP.
 
 ## Controls
 
@@ -139,4 +141,4 @@ server/   Asyncio TCP game server and bot loop.
 shared/   Protocol, dataclasses and deterministic game simulation.
 ```
 
-The server is authoritative for online mode. The client sends sequenced compact input commands and receives full or delta world snapshots. Each client receives only nearby high-frequency entities through interest management while scoreboard-safe player metadata remains available.
+The server is authoritative for online mode. The client sends sequenced movement input, never authoritative positions. Transactional actions such as pickup, interact, inventory drag/drop, craft, repair, equip, reload, respawn and utility toggles use reliable ordered `command` messages with `command_result` acknowledgements. Snapshots include `ack_input_seq`, `server_time` and `snapshot_interval`; the client drops acknowledged inputs, predicts the local player and interpolates other entities with a short buffer. Each client receives only nearby high-frequency entities through interest management while scoreboard-safe player metadata remains available.

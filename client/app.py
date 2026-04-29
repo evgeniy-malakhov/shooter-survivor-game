@@ -16,7 +16,7 @@ from shared.difficulty import DIFFICULTY_KEYS, load_difficulty
 from shared.explosives import GRENADE_SPECS, DEFAULT_GRENADE
 from shared.items import EQUIPMENT_SLOTS, ITEMS, RECIPES
 from shared.level import tunnel_segments
-from shared.models import BuildingState, InputCommand, LootState, PlayerState, RectState, Vec2, WorldSnapshot
+from shared.models import BuildingState, ClientCommand, InputCommand, LootState, PlayerState, RectState, Vec2, WorldSnapshot
 from shared.rarities import RARITY_KEYS, rarity_color, rarity_rank, rarity_spec
 from shared.simulation import GameWorld
 from shared.weapon_modules import WEAPON_MODULES, WEAPON_MODULE_SLOTS
@@ -131,6 +131,7 @@ class GameApp:
         self.pending_repair_slot: str | None = None
         self.pending_slot: str | None = None
         self.pending_equip_armor: str | None = None
+        self._local_command_id = 0
         self.drag_source: dict[str, object] | None = None
         self.custom_weapon_slot = "1"
         self.settings = {
@@ -662,24 +663,32 @@ class GameApp:
 
         if self.state == "single" and self.world and self.local_player_id:
             if self.settings_open or self.backpack_open or self.craft_open or self.weapon_custom_open:
-                if self.pending_inventory_action or self.pending_craft_key or self.pending_repair_slot:
-                    command = self._build_input(self.local_player_id)
-                    self.world.set_input(command)
-                    self.world.update(0.0)
-                    self._clear_transient_inputs()
+                self._dispatch_pending_commands(self.local_player_id)
+                command = self._build_input(self.local_player_id)
+                self.world.set_input(command)
+                self.world.update(0.0)
                 self._update_camera_zoom(dt)
                 self._update_damage_feedback(dt)
                 return
+            self._dispatch_pending_commands(self.local_player_id)
             command = self._build_input(self.local_player_id)
             self.world.set_input(command)
             self.world.update(dt)
-            self._clear_transient_inputs()
         elif self.state == "online_game" and self.online.player_id:
+            self._dispatch_pending_commands(self.online.player_id)
             command = self._build_input(self.online.player_id)
             self.online.send_input(command)
-            self._clear_transient_inputs()
+            self._handle_online_events()
         self._update_camera_zoom(dt)
         self._update_damage_feedback(dt)
+
+    def _handle_online_events(self) -> None:
+        if self.state != "online_game":
+            return
+        for event in self.online.poll_events():
+            kind = event.get("kind")
+            if kind in {"hit", "player_died"} and event.get("target_id", event.get("player_id")) == self.online.player_id:
+                self.damage_flash = min(1.0, max(self.damage_flash, 0.35))
 
     def _update_camera_zoom(self, dt: float) -> None:
         snapshot = self._snapshot()
@@ -729,21 +738,56 @@ class GameApp:
             aim_x=mouse_world.x,
             aim_y=mouse_world.y,
             shooting=pygame.mouse.get_pressed(num_buttons=3)[0] and not ui_open,
-            reload=self.pending_reload,
-            pickup=self.pending_pickup,
-            interact=self.pending_interact,
-            use_medkit=self.pending_medkit,
             sprint=keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT],
             sneak=keys[pygame.K_LCTRL] or keys[pygame.K_RCTRL],
-            respawn=self.pending_respawn,
-            throw_grenade=self.pending_throw_grenade,
-            toggle_utility=self.pending_toggle_utility,
-            inventory_action=self.pending_inventory_action,
-            craft_key=self.pending_craft_key,
-            repair_slot=self.pending_repair_slot,
-            active_slot=self.pending_slot,
-            equip_armor=self.pending_equip_armor,
         )
+
+    def _dispatch_pending_commands(self, player_id: str) -> None:
+        commands = self._pending_command_specs()
+        if not commands:
+            return
+        if self.state == "online_game":
+            if self.online.has_pending_commands():
+                return
+            sent_all = True
+            for kind, payload in commands:
+                sent_all = self.online.send_command(kind, payload) is not None and sent_all
+            if sent_all:
+                self._clear_transient_inputs()
+            return
+        if self.world:
+            for kind, payload in commands:
+                self._local_command_id += 1
+                self.world.apply_client_command(ClientCommand(player_id, self._local_command_id, kind, payload))
+            self._clear_transient_inputs()
+
+    def _pending_command_specs(self) -> list[tuple[str, dict[str, object]]]:
+        commands: list[tuple[str, dict[str, object]]] = []
+        if self.pending_slot:
+            commands.append(("select_slot", {"slot": self.pending_slot}))
+        if self.pending_reload:
+            commands.append(("reload", {}))
+        if self.pending_pickup:
+            commands.append(("pickup", {}))
+        if self.pending_interact:
+            commands.append(("interact", {}))
+        if self.pending_toggle_utility:
+            commands.append(("toggle_utility", {}))
+        if self.pending_respawn:
+            commands.append(("respawn", {}))
+        if self.pending_throw_grenade:
+            commands.append(("throw_grenade", {}))
+        if self.pending_medkit:
+            commands.append(("use_medkit", {}))
+        if self.pending_inventory_action:
+            commands.append(("inventory_action", dict(self.pending_inventory_action)))
+        if self.pending_craft_key:
+            commands.append(("craft", {"key": self.pending_craft_key}))
+        if self.pending_repair_slot:
+            commands.append(("repair", {"slot": self.pending_repair_slot}))
+        if self.pending_equip_armor:
+            commands.append(("equip_armor", {"armor_key": self.pending_equip_armor}))
+        return commands
 
     def _clear_transient_inputs(self) -> None:
         self.pending_reload = False

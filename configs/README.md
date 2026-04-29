@@ -240,4 +240,25 @@ Difficulty is applied by the authoritative server in online mode.
 - `profiling.log_interval_seconds`: interval for `python -m server.main --profile` metrics.
 - `profiling.slow_tick_ms` and `profiling.slow_snapshot_ms`: reserved thresholds for stricter profiling alerts.
 
-The TCP protocol uses length-prefixed frames. `msgpack` is used when installed; otherwise the same framing falls back to compact JSON. The client supports full snapshots and compact delta snapshots.
+The TCP protocol uses length-prefixed frames. `msgpack` is used when installed; otherwise the same framing falls back to compact JSON. Snapshot packets are treated as lossy/unreliable inside the server queue, so stale snapshots can be dropped for slow clients. Login, profile updates, transactional commands, pings, command results and gameplay events stay on the reliable queue.
+
+Snapshot messages include:
+
+- `tick`: authoritative server simulation tick.
+- `seq`: server snapshot sequence for this client.
+- `ack_input_seq`: last client input sequence processed by the server.
+- `server_time`: authoritative world time used by interpolation buffers.
+- `snapshot_interval`: expected time between snapshots.
+- `schema`: currently `compact-v1`.
+
+`compact-v1` keeps the local player as a full player object for inventory/HUD correctness, while remote players, zombies, projectiles, grenades, mines, poison pools and loot are sent as compact arrays. The client expands this schema back into the shared `WorldSnapshot` model.
+
+Gameplay events are delivered separately with message type `events`. They are meant for one-shot effects and UI feedback such as `shot`, `hit`, `player_died`, `zombie_killed`, `grenade_exploded`, `mine_exploded` and `item_picked`.
+
+Movement input and gameplay commands are intentionally separate:
+
+- `input`: frequent disposable state containing only movement, aim, shooting, sprint and sneak.
+- `command`: reliable ordered transaction with `command_id`, `kind` and `payload`.
+- `command_result`: authoritative result for exactly one command, including `ok`, `reason` when rejected, and `server_tick`.
+
+Current command kinds include `pickup`, `interact`, `inventory_action`, `craft`, `repair`, `equip_armor`, `select_slot`, `reload`, `throw_grenade`, `toggle_utility`, `use_medkit` and `respawn`. Movement input may be overwritten by a newer input before the next simulation tick; commands are queued and processed in order.

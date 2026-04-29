@@ -770,6 +770,32 @@ class InputCommand:
 
 
 @dataclass(slots=True)
+class ClientCommand:
+    player_id: str
+    command_id: int
+    kind: str
+    payload: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "player_id": self.player_id,
+            "command_id": self.command_id,
+            "kind": self.kind,
+            "payload": dict(self.payload),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ClientCommand":
+        payload = data.get("payload", {})
+        return cls(
+            player_id=str(data.get("player_id", "")),
+            command_id=max(0, int(data.get("command_id", 0))),
+            kind=str(data.get("kind", "")),
+            payload=payload if isinstance(payload, dict) else {},
+        )
+
+
+@dataclass(slots=True)
 class WorldSnapshot:
     time: float
     map_width: int

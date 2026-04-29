@@ -10,10 +10,12 @@ from dataclasses import dataclass
 from typing import Any, Deque
 
 from server.config import ServerTuning, load_server_tuning
-from server.spatial import SnapshotInterestIndex, filter_snapshot_for_player
+from server.events import derive_events, filter_events_for_snapshot
+from server.spatial import SnapshotInterestIndex, filter_snapshot_area, snapshot_with_local_player
 from server.workers import AsyncLogWorker, ServerProfiler
 from shared.constants import SNAPSHOT_RATE, TICK_RATE
-from shared.models import InputCommand, PlayerState
+from shared.net_schema import SNAPSHOT_SCHEMA, compact_delta, compact_snapshot
+from shared.models import ClientCommand, InputCommand, PlayerState
 from shared.protocol import FrameDecoder, SERIALIZER_NAME, encode_message
 from shared.simulation import GameWorld
 from shared.snapshot_delta import make_snapshot_delta
@@ -31,7 +33,13 @@ class SimulationRunner:
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="simulation-runner", daemon=True)
         self._input_lock = threading.Lock()
-        self._pending_inputs: dict[str, InputCommand] = {}
+        self._pending_inputs: dict[str, tuple[int, InputCommand]] = {}
+        self._pending_commands: dict[str, Deque[ClientCommand]] = {}
+        self._pending_command_ids: dict[str, set[int]] = {}
+        self._last_command_ids: dict[str, int] = {}
+        self._command_results: Deque[dict[str, Any]] = deque()
+        self._domain_events: Deque[dict[str, Any]] = deque()
+        self._acked_inputs: dict[str, int] = {}
         self._snapshot_lock = threading.Lock()
         self._snapshot = SimulationSnapshot(self.world.snapshot().to_dict(), tick=0)
         self._last_tick_seconds = 0.0
@@ -47,6 +55,11 @@ class SimulationRunner:
 
     def add_player(self, name: str) -> tuple[PlayerState, SimulationSnapshot]:
         player = self.world.add_player(name)
+        with self._input_lock:
+            self._acked_inputs[player.id] = 0
+            self._pending_commands[player.id] = deque()
+            self._pending_command_ids[player.id] = set()
+            self._last_command_ids[player.id] = 0
         snapshot = SimulationSnapshot(self.world.snapshot().to_dict(), self._tick_id)
         self._publish_snapshot(snapshot)
         return player, snapshot
@@ -54,6 +67,10 @@ class SimulationRunner:
     def remove_player(self, player_id: str) -> None:
         with self._input_lock:
             self._pending_inputs.pop(player_id, None)
+            self._pending_commands.pop(player_id, None)
+            self._pending_command_ids.pop(player_id, None)
+            self._last_command_ids.pop(player_id, None)
+            self._acked_inputs.pop(player_id, None)
         self.world.remove_player(player_id)
         self._refresh_snapshot()
 
@@ -61,9 +78,46 @@ class SimulationRunner:
         self.world.rename_player(player_id, name)
         self._refresh_snapshot()
 
-    def set_input(self, command: InputCommand) -> None:
+    def set_input(self, command: InputCommand, sequence: int) -> None:
         with self._input_lock:
-            self._pending_inputs[command.player_id] = command
+            previous = self._pending_inputs.get(command.player_id)
+            if previous and sequence <= previous[0]:
+                return
+            self._pending_inputs[command.player_id] = (sequence, command)
+
+    def ack_input_seq(self, player_id: str) -> int:
+        with self._input_lock:
+            return self._acked_inputs.get(player_id, 0)
+
+    def queue_command(self, command: ClientCommand) -> tuple[bool, str]:
+        with self._input_lock:
+            last_id = self._last_command_ids.get(command.player_id, 0)
+            pending_ids = self._pending_command_ids.setdefault(command.player_id, set())
+            if command.command_id <= last_id:
+                self._command_results.append(
+                    self._command_result(command, True, "", duplicate=True)
+                )
+                return True, ""
+            if command.command_id in pending_ids:
+                return False, "duplicate_pending"
+            queue = self._pending_commands.setdefault(command.player_id, deque())
+            if len(queue) >= 128:
+                return False, "command_queue_full"
+            queue.append(command)
+            pending_ids.add(command.command_id)
+            return True, ""
+
+    def drain_command_results(self) -> list[dict[str, Any]]:
+        with self._input_lock:
+            results = list(self._command_results)
+            self._command_results.clear()
+            return results
+
+    def drain_domain_events(self) -> list[dict[str, Any]]:
+        with self._input_lock:
+            events = list(self._domain_events)
+            self._domain_events.clear()
+            return events
 
     def snapshot(self) -> SimulationSnapshot:
         with self._snapshot_lock:
@@ -86,8 +140,10 @@ class SimulationRunner:
 
             if now >= next_tick:
                 started = time.perf_counter()
+                self._apply_pending_commands()
                 self._apply_pending_inputs()
                 self.world.update(dt)
+                self._collect_domain_events()
                 self._tick_id += 1
                 self._last_tick_seconds = time.perf_counter() - started
                 next_tick += dt
@@ -110,8 +166,54 @@ class SimulationRunner:
         with self._input_lock:
             commands = list(self._pending_inputs.values())
             self._pending_inputs.clear()
-        for command in commands:
+        for sequence, command in commands:
             self.world.set_input(command)
+            with self._input_lock:
+                self._acked_inputs[command.player_id] = max(self._acked_inputs.get(command.player_id, 0), sequence)
+
+    def _apply_pending_commands(self) -> None:
+        with self._input_lock:
+            commands: list[ClientCommand] = []
+            for queue in self._pending_commands.values():
+                commands.extend(queue)
+                queue.clear()
+        for command in commands:
+            ok, reason = self.world.apply_client_command(command)
+            with self._input_lock:
+                self._pending_command_ids.setdefault(command.player_id, set()).discard(command.command_id)
+                self._last_command_ids[command.player_id] = max(
+                    self._last_command_ids.get(command.player_id, 0),
+                    command.command_id,
+                )
+                self._command_results.append(self._command_result(command, ok, reason))
+            self._collect_domain_events()
+
+    def _command_result(
+        self,
+        command: ClientCommand,
+        ok: bool,
+        reason: str,
+        duplicate: bool = False,
+    ) -> dict[str, Any]:
+        result = {
+            "player_id": command.player_id,
+            "command_id": command.command_id,
+            "kind": command.kind,
+            "ok": ok,
+            "server_tick": self._tick_id,
+        }
+        if reason:
+            result["reason"] = reason
+        if duplicate:
+            result["duplicate"] = True
+        return result
+
+    def _collect_domain_events(self) -> None:
+        events = self.world.drain_domain_events()
+        if not events:
+            return
+        with self._input_lock:
+            self._domain_events.extend(events)
 
     def _refresh_snapshot(self) -> None:
         self._publish_snapshot(SimulationSnapshot(self.world.snapshot().to_dict(), self._tick_id))
@@ -130,16 +232,17 @@ class OutboundPacket:
 class ClientOutputQueue:
     def __init__(self, max_packets: int) -> None:
         self._max_packets = max_packets
-        self._items: Deque[OutboundPacket] = deque()
+        self._reliable: Deque[OutboundPacket] = deque()
+        self._unreliable: Deque[OutboundPacket] = deque()
         self._event = asyncio.Event()
         self._closed = False
 
     def __len__(self) -> int:
-        return len(self._items)
+        return len(self._reliable) + len(self._unreliable)
 
     @property
     def full(self) -> bool:
-        return len(self._items) >= self._max_packets
+        return len(self) >= self._max_packets
 
     def close(self) -> None:
         self._closed = True
@@ -151,28 +254,45 @@ class ClientOutputQueue:
         return self._drop_oldest_snapshot()
 
     def put(self, packet: OutboundPacket) -> bool:
-        if self._closed or self.full:
+        if self._closed:
             return False
-        self._items.append(packet)
+        if self.full:
+            self._drop_oldest_snapshot()
+        if self.full:
+            return False
+        if packet.kind == "snapshot":
+            self._unreliable.append(packet)
+        else:
+            self._reliable.append(packet)
         self._event.set()
         return True
 
     async def get(self) -> OutboundPacket | None:
-        while not self._items:
+        while not self._reliable and not self._unreliable:
             if self._closed:
                 return None
             self._event.clear()
-            if self._items:
+            if self._reliable or self._unreliable:
                 break
             await self._event.wait()
-        return self._items.popleft() if self._items else None
+        if self._reliable:
+            return self._reliable.popleft()
+        return self._unreliable.popleft() if self._unreliable else None
 
     def _drop_oldest_snapshot(self) -> bool:
-        for index, packet in enumerate(self._items):
+        if not self._unreliable:
+            return False
+        kept: Deque[OutboundPacket] = deque()
+        dropped = False
+        while self._unreliable:
+            packet = self._unreliable.popleft()
             if packet.kind == "snapshot":
-                del self._items[index]
-                return True
-        return False
+                dropped = True
+                break
+            kept.append(packet)
+        kept.extend(self._unreliable)
+        self._unreliable = kept
+        return dropped
 
 
 @dataclass(slots=True)
@@ -186,8 +306,10 @@ class ClientSession:
     last_snapshot_tick: int = -1
     snapshots_since_full: int = 0
     sequence: int = 0
-    last_input_seq: int = 0
+    last_received_input_seq: int = 0
     dropped_snapshots: int = 0
+    snapshot_stride: int = 1
+    snapshot_skip: int = 0
 
 
 class GameProtocol(asyncio.Protocol):
@@ -261,6 +383,7 @@ class GameServer:
         self.log_worker = AsyncLogWorker()
         self.profiler = ServerProfiler(enabled=profile)
         self.profile_enabled = profile
+        self._event_source_snapshot: dict[str, Any] | None = None
 
     async def start(self) -> None:
         await self.log_worker.start()
@@ -270,6 +393,7 @@ class GameServer:
             self._server = await loop.create_server(lambda: GameProtocol(self), self.host, self.port)
             self._tasks = [
                 asyncio.create_task(self._snapshot_loop(), name="snapshot-sender"),
+                asyncio.create_task(self._command_result_loop(), name="command-results"),
             ]
             if self.profile_enabled:
                 self._tasks.append(asyncio.create_task(self._profile_loop(), name="server-profiler"))
@@ -312,6 +436,8 @@ class GameServer:
             return
         if message_type == "input":
             self._handle_input(session, message)
+        elif message_type == "command":
+            self._handle_command(session, message)
         elif message_type == "profile":
             name = str(message.get("name", ""))[:18]
             session.name = name
@@ -353,9 +479,13 @@ class GameServer:
             session,
             "welcome",
             player_id=player.id,
-            snapshot=filtered,
+            snapshot=compact_snapshot(filtered, player.id),
+            schema=SNAPSHOT_SCHEMA,
             tick=snapshot.tick,
             seq=0,
+            ack_input_seq=0,
+            server_time=float(filtered.get("time", 0.0)),
+            snapshot_interval=1.0 / SNAPSHOT_RATE,
             codec=SERIALIZER_NAME,
         )
         self.log_worker.info(f"player connected: {name} ({player.id})")
@@ -365,12 +495,59 @@ class GameServer:
             sequence = int(message.get("seq", 0))
         except (TypeError, ValueError):
             sequence = 0
-        if sequence and sequence <= session.last_input_seq:
+        if sequence and sequence <= session.last_received_input_seq:
             return
-        session.last_input_seq = sequence
-        command = InputCommand.from_dict(message.get("command", {}))
+        session.last_received_input_seq = sequence
+        raw = message.get("command", {})
+        raw = raw if isinstance(raw, dict) else {}
+        command = InputCommand(
+            player_id=session.player_id,
+            move_x=float(raw.get("move_x", 0.0)),
+            move_y=float(raw.get("move_y", 0.0)),
+            aim_x=float(raw.get("aim_x", 0.0)),
+            aim_y=float(raw.get("aim_y", 0.0)),
+            shooting=bool(raw.get("shooting", False)),
+            sprint=bool(raw.get("sprint", False)),
+            sneak=bool(raw.get("sneak", False)),
+        )
         command.player_id = session.player_id
-        self.simulation.set_input(command)
+        self.simulation.set_input(command, sequence)
+
+    def _handle_command(self, session: ClientSession, message: dict[str, Any]) -> None:
+        try:
+            command_id = int(message.get("command_id", 0))
+        except (TypeError, ValueError):
+            command_id = 0
+        kind = str(message.get("kind", ""))
+        payload = message.get("payload", {})
+        command = ClientCommand(
+            player_id=session.player_id,
+            command_id=command_id,
+            kind=kind,
+            payload=payload if isinstance(payload, dict) else {},
+        )
+        if command.command_id <= 0 or not command.kind:
+            self._queue_control(
+                session,
+                "command_result",
+                command_id=command.command_id,
+                kind=command.kind,
+                ok=False,
+                reason="invalid_command",
+                server_tick=self.simulation.snapshot().tick,
+            )
+            return
+        accepted, reason = self.simulation.queue_command(command)
+        if not accepted:
+            self._queue_control(
+                session,
+                "command_result",
+                command_id=command.command_id,
+                kind=command.kind,
+                ok=False,
+                reason=reason,
+                server_tick=self.simulation.snapshot().tick,
+            )
 
     def _send_ping(self, protocol: GameProtocol, message: dict[str, Any]) -> None:
         protocol.write(encode_message("pong", **self._ping_payload(message)))
@@ -386,7 +563,8 @@ class GameServer:
             "tick_rate": TICK_RATE,
             "snapshot_rate": SNAPSHOT_RATE,
             "codec": SERIALIZER_NAME,
-            "protocol": "tcp-frame-v2",
+            "protocol": "tcp-frame-v4",
+            "snapshot_schema": SNAPSHOT_SCHEMA,
         }
 
     async def _writer_loop(self, session: ClientSession) -> None:
@@ -414,28 +592,97 @@ class GameServer:
             started = time.perf_counter()
             snapshot = self.simulation.snapshot()
             index = SnapshotInterestIndex(snapshot.data, self.tuning.network.grid_cell_size)
+            events = derive_events(self._event_source_snapshot, snapshot.data, snapshot.tick)
+            self._event_source_snapshot = snapshot.data
+            area_cache: dict[tuple[int, int, int, str], dict[str, Any]] = {}
             for session in list(self.clients.values()):
                 if snapshot.tick <= session.last_snapshot_tick:
                     continue
-                filtered = filter_snapshot_for_player(
-                    snapshot.data,
-                    session.player_id,
-                    index,
-                    self.tuning.network.interest_radius,
-                    self.tuning.network.building_interest_radius,
-                )
+                session.snapshot_stride = self._adaptive_snapshot_stride(session)
+                if session.snapshot_stride > 1:
+                    session.snapshot_skip = (session.snapshot_skip + 1) % session.snapshot_stride
+                    if session.snapshot_skip:
+                        continue
+                else:
+                    session.snapshot_skip = 0
+                bucket = self._interest_bucket(snapshot.data, session.player_id)
+                if bucket not in area_cache:
+                    floor, cell_x, cell_y, inside = bucket
+                    center_x = cell_x * self.tuning.network.grid_cell_size + self.tuning.network.grid_cell_size * 0.5
+                    center_y = cell_y * self.tuning.network.grid_cell_size + self.tuning.network.grid_cell_size * 0.5
+                    area_cache[bucket] = filter_snapshot_area(
+                        snapshot.data,
+                        index,
+                        center_x,
+                        center_y,
+                        floor,
+                        inside or None,
+                        self.tuning.network.interest_radius + self.tuning.network.grid_cell_size * 0.75,
+                        self.tuning.network.building_interest_radius + self.tuning.network.grid_cell_size * 0.75,
+                    )
+                filtered = snapshot_with_local_player(area_cache[bucket], snapshot.data, session.player_id)
                 self._queue_snapshot(session, filtered, snapshot.tick)
+                visible_events = filter_events_for_snapshot(events, filtered, session.player_id)
+                if visible_events:
+                    self._queue_events(session, snapshot.tick, float(snapshot.data.get("time", 0.0)), visible_events)
             self.profiler.record("snapshot_loop", time.perf_counter() - started)
+
+    async def _command_result_loop(self) -> None:
+        while True:
+            await asyncio.sleep(0.01)
+            for result in self.simulation.drain_command_results():
+                player_id = str(result.get("player_id", ""))
+                session = self.clients.get(player_id)
+                if not session:
+                    continue
+                payload = dict(result)
+                payload.pop("player_id", None)
+                self._queue_control(session, "command_result", **payload)
+            for event in self.simulation.drain_domain_events():
+                player_id = str(event.get("player_id", ""))
+                session = self.clients.get(player_id)
+                if not session:
+                    continue
+                tick = int(event.get("server_tick", self.simulation.snapshot().tick))
+                server_time = float(event.get("time", self.simulation.snapshot().data.get("time", 0.0)))
+                self._queue_events(session, tick, server_time, [event])
 
     def _filter_snapshot(self, snapshot: dict[str, Any], player_id: str) -> dict[str, Any]:
         index = SnapshotInterestIndex(snapshot, self.tuning.network.grid_cell_size)
-        return filter_snapshot_for_player(
+        floor, cell_x, cell_y, inside = self._interest_bucket(snapshot, player_id)
+        center_x = cell_x * self.tuning.network.grid_cell_size + self.tuning.network.grid_cell_size * 0.5
+        center_y = cell_y * self.tuning.network.grid_cell_size + self.tuning.network.grid_cell_size * 0.5
+        area = filter_snapshot_area(
             snapshot,
-            player_id,
             index,
-            self.tuning.network.interest_radius,
-            self.tuning.network.building_interest_radius,
+            center_x,
+            center_y,
+            floor,
+            inside or None,
+            self.tuning.network.interest_radius + self.tuning.network.grid_cell_size * 0.75,
+            self.tuning.network.building_interest_radius + self.tuning.network.grid_cell_size * 0.75,
         )
+        return snapshot_with_local_player(area, snapshot, player_id)
+
+    def _interest_bucket(self, snapshot: dict[str, Any], player_id: str) -> tuple[int, int, int, str]:
+        players = snapshot.get("players", {})
+        player = players.get(player_id, {}) if isinstance(players, dict) else {}
+        pos = player.get("pos", {}) if isinstance(player, dict) and isinstance(player.get("pos"), dict) else {}
+        cell_size = self.tuning.network.grid_cell_size
+        return (
+            int(player.get("floor", 0)) if isinstance(player, dict) else 0,
+            int(float(pos.get("x", 0.0)) // cell_size),
+            int(float(pos.get("y", 0.0)) // cell_size),
+            str(player.get("inside_building") or "") if isinstance(player, dict) else "",
+        )
+
+    def _adaptive_snapshot_stride(self, session: ClientSession) -> int:
+        queue_pressure = len(session.outbox) / max(1, self.tuning.network.output_queue_packets)
+        if queue_pressure >= 0.72:
+            return 4
+        if queue_pressure >= 0.42:
+            return 2
+        return 1
 
     def _queue_control(self, session: ClientSession, message_type: str, **payload: Any) -> None:
         try:
@@ -468,8 +715,12 @@ class GameServer:
                 "snapshot",
                 tick=tick,
                 seq=session.sequence,
+                ack_input_seq=self.simulation.ack_input_seq(session.player_id),
+                server_time=float(snapshot.get("time", 0.0)),
+                snapshot_interval=session.snapshot_stride / SNAPSHOT_RATE,
                 full=True,
-                snapshot=snapshot,
+                schema=SNAPSHOT_SCHEMA,
+                snapshot=compact_snapshot(snapshot, session.player_id),
             )
             session.snapshots_since_full = 0
         else:
@@ -478,14 +729,34 @@ class GameServer:
                 "snapshot",
                 tick=tick,
                 seq=session.sequence,
+                ack_input_seq=self.simulation.ack_input_seq(session.player_id),
+                server_time=float(snapshot.get("time", 0.0)),
+                snapshot_interval=session.snapshot_stride / SNAPSHOT_RATE,
                 full=False,
                 base_tick=session.last_snapshot_tick,
-                delta=delta,
+                schema=SNAPSHOT_SCHEMA,
+                delta=compact_delta(delta, session.player_id),
             )
             session.snapshots_since_full += 1
         if session.outbox.put(OutboundPacket(payload, kind="snapshot")):
             session.last_snapshot = snapshot
             session.last_snapshot_tick = tick
+
+    def _queue_events(
+        self,
+        session: ClientSession,
+        tick: int,
+        server_time: float,
+        events: list[dict[str, Any]],
+    ) -> None:
+        self._queue_control(
+            session,
+            "events",
+            tick=tick,
+            server_time=server_time,
+            events=events,
+            channel="reliable",
+        )
 
     async def _profile_loop(self) -> None:
         delay = self.tuning.profiling.log_interval_seconds
