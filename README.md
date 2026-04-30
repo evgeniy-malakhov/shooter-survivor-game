@@ -27,6 +27,7 @@ Top-down shooter prototype in Python with a shared simulation core for single-pl
 - Optimized TCP protocol based on asyncio Protocol, length-prefixed frames, optional msgpack encoding, per-client output queues, logical reliable/unreliable channels, interest filtering and compact delta snapshots.
 - Online netcode supports input acknowledgement, client-side prediction, reconciliation and interpolation buffering for smoother remote entities.
 - Gameplay events are streamed separately from state snapshots for effects such as shots, hits, deaths, explosions, pickups and transactional command results.
+- Headless fake-client load tests in `load_tests/` cover movement, reliable commands, reconnect/resume, packet delay and server metrics.
 
 ## Install
 
@@ -81,6 +82,22 @@ Servers are configured in [servers.json](servers.json). Add more entries like th
 Server difficulty can be `easy`, `medium`, `hard` or `insane`. In online mode the server owns the world balance.
 
 Server networking is configured in `configs/server.json`. The current online protocol uses optimized TCP frames with compact snapshot schema `compact-v1`. UDP is exposed as a reserved launch option for future protocol work, but the playable server currently runs on TCP.
+
+The server also exposes HTTP observability endpoints from `configs/server.json -> observability`:
+
+- `http://127.0.0.1:8766/health`
+- `http://127.0.0.1:8766/ready`
+- `http://127.0.0.1:8766/metrics`
+
+## Load Testing
+
+Run headless fake clients against the server:
+
+```powershell
+python -m load_tests.fake_client_runner --profile smoke --host 127.0.0.1 --port 8765
+```
+
+Profiles `50`, `100`, `300` and `500` are defined in `load_tests/profiles.json`. Full instructions and metric explanations are in [load_tests/README.md](load_tests/README.md).
 
 ## Controls
 

@@ -18,6 +18,7 @@ from shared.net_schema import SNAPSHOT_SCHEMA, expand_delta, expand_snapshot
 from shared.protocol import FrameDecoder, encode_message
 from shared.protocol_meta import CLIENT_FEATURES, CLIENT_VERSION, PROTOCOL_VERSION
 from shared.snapshot_delta import apply_snapshot_delta
+from shared.state_hash import snapshot_hash
 
 
 INTERPOLATION_DELAY_SECONDS = 0.10
@@ -25,6 +26,7 @@ MAX_INTERPOLATION_BUFFER = 32
 MAX_PENDING_INPUTS = 80
 HEARTBEAT_INTERVAL_SECONDS = 1.0
 RESUME_RETRY_SECONDS = 0.75
+STATE_HASH_INTERVAL_SECONDS = 7.5
 
 
 @dataclass(slots=True)
@@ -86,6 +88,7 @@ class OnlineClient:
         self._ping_ms: float | None = None
         self._last_ping_at = 0.0
         self._last_pong_at = 0.0
+        self._last_state_hash_at = 0.0
         self._input_seq = 0
         self._command_id = 0
         self._last_snapshot_tick = -1
@@ -179,6 +182,7 @@ class OnlineClient:
             self._last_input_sent_at = time.perf_counter()
             self._last_ping_at = 0.0
             self._last_pong_at = time.perf_counter()
+            self._last_state_hash_at = 0.0
             self.error = None
             if reset_session:
                 self._input_seq = 0
@@ -389,6 +393,8 @@ class OnlineClient:
             now = time.perf_counter()
             if now - self._last_ping_at >= HEARTBEAT_INTERVAL_SECONDS:
                 self._send_heartbeat()
+            if now - self._last_state_hash_at >= STATE_HASH_INTERVAL_SECONDS:
+                self._send_state_hash()
             time.sleep(0.1)
 
     def _send_heartbeat(self) -> None:
@@ -401,6 +407,19 @@ class OnlineClient:
                     client_ping_ms=0.0 if self._ping_ms is None else round(self._ping_ms, 2),
                 )
             )
+        except (OSError, queue.Full, ValueError) as exc:
+            self.error = str(exc)
+            self._running = False
+
+    def _send_state_hash(self) -> None:
+        with self._snapshot_lock:
+            snapshot_data = deepcopy(self._snapshot_data) if self._snapshot_data else None
+            tick = self._last_snapshot_tick
+        if not snapshot_data or tick < 0:
+            return
+        try:
+            self._last_state_hash_at = time.perf_counter()
+            self._enqueue(encode_message("state_hash", tick=tick, hash=snapshot_hash(snapshot_data)))
         except (OSError, queue.Full, ValueError) as exc:
             self.error = str(exc)
             self._running = False
@@ -481,6 +500,12 @@ class OnlineClient:
                 command_id = int(message.get("command_id", 0))
                 self._pending_commands.pop(command_id, None)
                 self._command_results.append(dict(message))
+        elif message_type == "state_hash_result":
+            if not message.get("ok", True):
+                with self._snapshot_lock:
+                    self._snapshot_buffer.clear()
+                    self._render_cache_snapshot = None
+                    self.events.append({"kind": "desync_resync", **dict(message)})
         elif message_type == "pong":
             sent = message.get("sent")
             with contextlib.suppress(TypeError, ValueError):

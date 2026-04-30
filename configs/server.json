@@ -1,14 +1,30 @@
 {
+  "simulation": {
+    "tick_rate": 30,
+    "snapshot_rate": 20
+  },
   "network": {
+    "max_clients": 128,
     "interest_radius": 1800,
     "building_interest_radius": 2400,
     "grid_cell_size": 512,
     "output_queue_packets": 64,
+    "command_queue_limit": 128,
     "full_snapshot_interval_seconds": 5,
     "resume_timeout_seconds": 30,
     "journal_seconds": 10,
     "write_buffer_high_water": 262144,
     "write_buffer_low_water": 65536
+  },
+  "rate_limits": {
+    "input_per_second": 45,
+    "command_per_second": 16,
+    "inbound_bytes_per_second": 256000
+  },
+  "observability": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 8766
   },
   "profiling": {
     "log_interval_seconds": 5,

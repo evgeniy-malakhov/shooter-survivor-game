@@ -39,6 +39,14 @@ class PersistenceWorker:
         self._task = None
         await self._flush_profiles()
 
+    @property
+    def is_running(self) -> bool:
+        return bool(self._task and not self._task.done())
+
+    @property
+    def queue_size(self) -> int:
+        return self._queue.qsize()
+
     def record_session(self, event: str, **payload: Any) -> None:
         self._put("session", {"event": event, **payload})
 

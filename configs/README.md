@@ -231,14 +231,23 @@ Difficulty is applied by the authoritative server in online mode.
 
 `server.json` controls the optimized online server:
 
+- `simulation.tick_rate`: authoritative simulation ticks per second. Higher values improve responsiveness but increase CPU cost.
+- `simulation.snapshot_rate`: maximum snapshot send rate per client before adaptive throttling. Higher values improve smoothness but increase bandwidth and encoding cost.
+- `network.max_clients`: hard cap for simultaneously connected players. Resume tickets do not count as connected players, but they still keep players in the world until timeout.
 - `network.interest_radius`: radius around each player for high-frequency entities such as zombies, loot, projectiles, grenades, mines and poison pools.
 - `network.building_interest_radius`: larger radius used for building state so doors/interiors arrive before the player reaches them.
 - `network.grid_cell_size`: spatial hash cell size used by interest management.
 - `network.output_queue_packets`: maximum queued outbound packets per client. If a client falls behind, old snapshot packets are dropped and the next snapshot is forced full.
+- `network.command_queue_limit`: maximum reliable commands waiting for one player inside the simulation runner.
 - `network.full_snapshot_interval_seconds`: how often each client receives a full resync even when delta snapshots are working.
 - `network.resume_timeout_seconds`: how long a disconnected player remains in the world and can resume with the same `session_token`.
 - `network.journal_seconds`: retention window for recent command results, gameplay events and snapshot metadata used by reconnect/replay diagnostics.
 - `network.write_buffer_high_water` and `network.write_buffer_low_water`: asyncio transport backpressure thresholds.
+- `rate_limits.input_per_second`: maximum movement input messages accepted from one player per second.
+- `rate_limits.command_per_second`: maximum reliable command messages accepted from one player per second.
+- `rate_limits.inbound_bytes_per_second`: maximum inbound bytes accepted from one connected player per second before closing the connection.
+- `observability.enabled`: starts or disables the lightweight HTTP probe server.
+- `observability.host` and `observability.port`: bind address for `/metrics`, `/health` and `/ready`.
 - `profiling.log_interval_seconds`: interval for `python -m server.main --profile` metrics.
 - `profiling.slow_tick_ms` and `profiling.slow_snapshot_ms`: reserved thresholds for stricter profiling alerts.
 
@@ -266,6 +275,58 @@ Movement input and gameplay commands are intentionally separate:
 - `command_result`: authoritative result for exactly one command, including `ok`, `reason` when rejected, and `server_tick`.
 
 Current command kinds include `pickup`, `interact`, `inventory_action`, `craft`, `repair`, `equip_armor`, `select_slot`, `reload`, `throw_grenade`, `toggle_utility`, `use_medkit` and `respawn`. Movement input may be overwritten by a newer input before the next simulation tick; commands are queued and processed in order.
+
+## Observability Endpoints
+
+When `observability.enabled` is true, the server exposes:
+
+- `/health`: returns HTTP 200 while the Python process and HTTP probe are alive. It reports `healthy` or `shutting_down`.
+- `/ready`: returns HTTP 200 only when the server accepts players, the simulation loop is alive, persistence is running and `network.max_clients` is not reached. Otherwise it returns HTTP 503.
+- `/metrics`: Prometheus text format for runtime metrics.
+
+The normal game-server ping response also includes `ready`, `max_players`, `tick_rate`, `snapshot_rate` and `metrics_url`, so the client server list can show readiness without opening the HTTP port directly.
+
+Main `/metrics` series:
+
+- `neon_connected_players`: currently connected players.
+- `neon_tick_ms_avg`, `neon_tick_ms_p95`, `neon_tick_ms_p99`, plus `neon_tick_ms{quantile="avg|p95|p99"}` and `neon_tick_ms_count`: simulation tick duration. Rising p95/p99 means AI, physics, commands or world update cost is too high.
+- `neon_snapshot_ms_avg`, `neon_snapshot_ms_p95`, `neon_snapshot_ms_p99`, plus `neon_snapshot_ms{quantile="avg|p95|p99"}` and `neon_snapshot_ms_count`: snapshot build/filter/queue loop duration. Rising values point to interest filtering, delta encoding or per-client queue pressure.
+- `neon_command_ack_ms_avg`, `neon_command_ack_ms_p95`, `neon_command_ack_ms_p99`, plus `neon_command_ack_ms{quantile="avg|p95|p99"}` and `neon_command_ack_ms_count`: server-side reliable command processing latency from receive to result generation.
+- `neon_commands_rejected_total`: invalid, rate-limited or game-rule rejected commands.
+- `neon_reconnect_total`: successful resume handshakes.
+- `neon_dropped_snapshots_total`: stale snapshot packets dropped from slow-client queues.
+- `neon_bytes_sent_total` and `neon_bytes_received_total`: raw game-protocol traffic counters.
+- `neon_desync_reports_total`: client snapshot hashes received by the desync detector.
+- `neon_desync_mismatch_total`: mismatched client/server hashes.
+- `neon_desync_forced_full_total`: full snapshots forced after detected desync.
+- `neon_rate_limited_inputs_total`, `neon_rate_limited_commands_total`, `neon_rate_limited_bytes_total`: rate-limit pressure by category.
+- `neon_resume_tickets`: disconnected players still resumable.
+- `neon_output_queue_packets`: total queued outbound packets across connected clients.
+- `neon_persistence_queue_size`: records waiting for the persistence worker.
+
+Python/process-specific metrics:
+
+- `neon_process_uptime_seconds`: process uptime.
+- `neon_process_cpu_seconds_total`: Python process CPU time.
+- `neon_python_threads`: active Python threads, useful for checking worker leaks.
+- `neon_python_gc_count{generation="0|1|2"}`: current GC generation counters.
+- `neon_asyncio_tasks`: active asyncio tasks in the server loop.
+- `neon_python_allocated_blocks`: CPython allocated memory blocks when available.
+- `neon_process_pid`: OS process id for correlating with external profilers.
+
+## Desync Detector
+
+The online client periodically sends:
+
+```json
+{
+  "type": "state_hash",
+  "tick": 12000,
+  "hash": "..."
+}
+```
+
+The hash is calculated from the latest authoritative snapshot stored by the network client, not from the predicted/interpolated render state. The server compares it with the hash of the snapshot that was actually queued to that player. On mismatch, the server increments desync metrics, forces the next snapshot to be full and sends `state_hash_result` with `force_full: true`.
 
 The server keeps short command/event/snapshot journals for resume replay and desync debugging. Persistent records are written by a background worker into `server_data/` as JSON/JSONL files, outside the game tick:
 

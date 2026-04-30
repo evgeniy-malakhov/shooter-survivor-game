@@ -11,6 +11,8 @@ CLIENT_FEATURES = [
     "interpolation",
     "adaptive_snapshot",
     "resume_session",
+    "state_hash",
+    "health_probe",
 ]
 SERVER_FEATURES = [
     "commands",
@@ -22,4 +24,8 @@ SERVER_FEATURES = [
     "event_journal",
     "persistence_worker",
     "graceful_shutdown",
+    "state_hash",
+    "metrics_http",
+    "health_probe",
+    "configurable_tuning",
 ]
