@@ -144,6 +144,18 @@ HOUSE_LOOT = [
     ("light_legs", 1, 1),
 ]
 
+BASEMENT_LOOT = [
+    ("repair_kit", 1, 4),
+    ("circuit", 1, 4),
+    ("gunpowder", 1, 4),
+    ("heavy_grenade", 1, 3),
+    ("mine_standard", 1, 3),
+    ("mine_heavy", 1, 2),
+    ("laser_module", 1, 2),
+    ("flashlight_module", 1, 2),
+    ("extended_mag", 1, 2),
+]
+
 WORLD_LOOT = [
     ("apple", 1, 2),
     ("scrap", 1, 5),

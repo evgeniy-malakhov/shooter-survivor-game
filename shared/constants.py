@@ -8,8 +8,8 @@ from shared.models import ArmorSpec, WeaponSpec, ZombieSpec
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "configs"
 
-MAP_WIDTH = 9600
-MAP_HEIGHT = 6600
+MAP_WIDTH = 28800
+MAP_HEIGHT = 19800
 TICK_RATE = 30
 SNAPSHOT_RATE = 20
 INITIAL_ZOMBIES = 8

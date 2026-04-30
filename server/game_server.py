@@ -752,6 +752,8 @@ class GameServer:
             server_features=SERVER_FEATURES,
             mode=self.server_mode,
             pvp=self.pvp,
+            interest_radius=self.tuning.network.interest_radius,
+            building_interest_radius=self.tuning.network.building_interest_radius,
         )
         self.log_worker.info(f"player connected: {name} ({player.id})")
         self.persistence.record_session("player_connected", player_id=player.id, name=name)
@@ -816,6 +818,8 @@ class GameServer:
             server_features=SERVER_FEATURES,
             mode=self.server_mode,
             pvp=self.pvp,
+            interest_radius=self.tuning.network.interest_radius,
+            building_interest_radius=self.tuning.network.building_interest_radius,
         )
         last_tick = int(message.get("last_snapshot_tick", 0))
         results, events = self.journal.replay_for_player(player_id, last_tick)
@@ -966,6 +970,8 @@ class GameServer:
             "difficulty": self.difficulty_key,
             "mode": self.server_mode,
             "pvp": self.pvp,
+            "interest_radius": self.tuning.network.interest_radius,
+            "building_interest_radius": self.tuning.network.building_interest_radius,
             "tick_ms": round(self.simulation.tick_seconds() * 1000.0, 2),
             "tick_rate": self.tick_rate,
             "snapshot_rate": self.snapshot_rate,

@@ -36,7 +36,7 @@ from shared.collision import segment_rect_intersects
 from shared.crafting import roll_crafted_rarity
 from shared.difficulty import DifficultyConfig, load_difficulty
 from shared.explosives import GRENADE_SPECS, MINE_SPECS, DEFAULT_GRENADE, DEFAULT_MINE
-from shared.items import ITEMS, LEGACY_LOOT_TO_ITEM, RECIPES, WORLD_LOOT, HOUSE_LOOT
+from shared.items import BASEMENT_LOOT, HOUSE_LOOT, ITEMS, LEGACY_LOOT_TO_ITEM, RECIPES, WORLD_LOOT
 from shared.level import all_closed_walls, make_buildings, nearest_door, nearest_prop, nearest_stairs, point_building
 from shared.rarities import RARITIES, rarity_rank, rarity_spec
 from shared.weapon_modules import WEAPON_MODULES
@@ -163,9 +163,10 @@ class GameWorld:
                     self.rng.uniform(building.bounds.x + 80, building.bounds.x + building.bounds.w - 80),
                     self.rng.uniform(building.bounds.y + 90, building.bounds.y + building.bounds.h - 90),
                 )
-                if not self._blocked_at(pos, 16):
-                    item_key = self.rng.choices([item[0] for item in HOUSE_LOOT], weights=[item[2] for item in HOUSE_LOOT])[0]
-                    floor = self.rng.choice([building.min_floor, 0, 0, 1, 2])
+                floor = self.rng.choice([building.min_floor, building.min_floor, 0, 0, 1, 2])
+                if not self._blocked_at(pos, 16, floor):
+                    loot_table = BASEMENT_LOOT if floor == building.min_floor else HOUSE_LOOT
+                    item_key = self.rng.choices([item[0] for item in loot_table], weights=[item[2] for item in loot_table])[0]
                     self._spawn_loot_at(pos, "item", item_key, self.rng.randint(1, 3), floor=floor)
 
     def add_player(self, name: str, player_id: str | None = None) -> PlayerState:

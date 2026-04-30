@@ -14,7 +14,8 @@ from typing import Any
 from shared.collision import move_circle_against_rects
 from shared.constants import MAP_HEIGHT, MAP_WIDTH, PLAYER_RADIUS, SPRINT_MULTIPLIER
 from shared.interpolation import interpolate_snapshot
-from shared.models import InputCommand, RectState, Vec2, WorldSnapshot
+from shared.level import tunnel_walls
+from shared.models import BuildingState, InputCommand, RectState, Vec2, WorldSnapshot
 from shared.net_schema import SNAPSHOT_SCHEMA, expand_delta, expand_snapshot
 from shared.protocol import FrameDecoder, encode_message
 from shared.protocol_meta import CLIENT_FEATURES, CLIENT_VERSION, PROTOCOL_VERSION
@@ -73,6 +74,8 @@ class OnlineClient:
         self.session_token: str | None = None
         self.resume_timeout: float = 0.0
         self.server_features: list[str] = []
+        self.server_interest_radius: float = 1600.0
+        self.server_building_interest_radius: float = 2200.0
         self.latest_snapshot: WorldSnapshot | None = None
         self._snapshot_data: dict[str, Any] | None = None
         self._socket: socket.socket | None = None
@@ -188,6 +191,8 @@ class OnlineClient:
             self.resume_timeout = float(message.get("resume_timeout", self.resume_timeout or 0.0))
             features = message.get("server_features", [])
             self.server_features = [str(feature) for feature in features] if isinstance(features, list) else []
+            self.server_interest_radius = float(message.get("interest_radius", self.server_interest_radius))
+            self.server_building_interest_radius = float(message.get("building_interest_radius", self.server_building_interest_radius))
             self._socket = sock
             self._decoder = decoder
             self._pending_messages = pending
@@ -363,6 +368,8 @@ class OnlineClient:
         self.session_token = None
         self.resume_timeout = 0.0
         self.server_features = []
+        self.server_interest_radius = 1600.0
+        self.server_building_interest_radius = 2200.0
         self._ping_ms = None
         self._last_pong_at = 0.0
         self._last_input_payload = None
@@ -566,6 +573,8 @@ class OnlineClient:
             sent = message.get("sent")
             with contextlib.suppress(TypeError, ValueError):
                 self._ping_ms = max(0.0, (time.time() - float(sent)) * 1000.0)
+                self.server_interest_radius = float(message.get("interest_radius", self.server_interest_radius))
+                self.server_building_interest_radius = float(message.get("building_interest_radius", self.server_building_interest_radius))
             self._last_pong_at = time.perf_counter()
         elif message_type == "welcome":
             self.session_token = str(message.get("session_token", self.session_token or ""))
@@ -849,9 +858,13 @@ class OnlineClient:
         walls: list[RectState] = []
         buildings = snapshot_data.get("buildings", {})
         if isinstance(buildings, dict):
+            parsed_buildings: dict[str, BuildingState] = {}
             for building in buildings.values():
                 if not isinstance(building, dict):
                     continue
+                with contextlib.suppress(TypeError, ValueError, KeyError):
+                    parsed = BuildingState.from_dict(building)
+                    parsed_buildings[parsed.id] = parsed
                 for wall_data in building.get("walls") or []:
                     wall = _rect_from_data(wall_data)
                     if wall:
@@ -872,6 +885,8 @@ class OnlineClient:
                     wall = _rect_from_data(door.get("rect"))
                     if wall:
                         walls.append(wall)
+            if floor == -1 and parsed_buildings:
+                walls.extend(tunnel_walls(parsed_buildings))
         self._collision_cache_key = cache_key
         self._collision_walls_cache = tuple(walls)
         return self._collision_walls_cache

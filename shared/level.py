@@ -7,19 +7,23 @@ WALL = 22.0
 
 def make_buildings() -> dict[str, BuildingState]:
     specs = [
-        ("b1", "Clinic", 1180, 980, 760, 520),
-        ("b2", "Warehouse", 3860, 1320, 920, 620),
-        ("b3", "Apartments", 6820, 840, 760, 700),
-        ("b4", "Station", 2060, 4060, 820, 560),
-        ("b5", "Market", 5740, 4260, 980, 600),
-        ("b6", "Depot", 7960, 5120, 740, 520),
+        ("b1", "Clinic", 3540, 2940, 760, 520),
+        ("b2", "Warehouse", 11580, 3960, 920, 620),
+        ("b3", "Apartments", 20460, 2520, 760, 700),
+        ("b4", "Station", 6180, 12180, 820, 560),
+        ("b5", "Market", 17220, 12780, 980, 600),
+        ("b6", "Depot", 23880, 15360, 740, 520),
+        ("b7", "Lab", 12640, 9100, 820, 600),
+        ("b8", "Garage", 2480, 16240, 900, 540),
+        ("b9", "Motel", 25220, 6020, 780, 660),
+        ("b10", "Archive", 14320, 16440, 760, 560),
     ]
     return {building.id: building for building in (_make_building(*spec) for spec in specs)}
 
 
 def tunnel_segments(buildings: dict[str, BuildingState]) -> list[RectState]:
-    order = ["b1", "b2", "b3", "b5", "b6", "b4", "b1"]
-    centers = [buildings[key].bounds.center for key in order if key in buildings]
+    order = ["b1", "b2", "b9", "b3", "b7", "b5", "b6", "b10", "b4", "b8", "b1"]
+    centers = [_basement_entry(buildings[key]) for key in order if key in buildings]
     tunnels: list[RectState] = []
     width = 118.0
     for start, end in zip(centers, centers[1:]):
@@ -49,6 +53,7 @@ def _make_building(building_id: str, name: str, x: float, y: float, w: float, h:
         DoorState(f"{building_id}-front", RectState(x + w * 0.42, y - 6, w * 0.16, WALL + 12)),
         DoorState(f"{building_id}-inside-a", RectState(x + w * 0.48 - 5, y + h * 0.30, WALL + 10, 76)),
         DoorState(f"{building_id}-inside-b", RectState(x + w * 0.48 - 5, y + h * 0.66, WALL + 10, 76)),
+        DoorState(f"{building_id}-basement", RectState(x + w * 0.42, y - 6, w * 0.16, WALL + 12), floor=-1),
     ]
     props = [
         PropState(f"{building_id}-desk", "desk", RectState(x + 72, y + 90, 96, 48), floor=0),
@@ -56,8 +61,9 @@ def _make_building(building_id: str, name: str, x: float, y: float, w: float, h:
         PropState(f"{building_id}-table", "table", RectState(x + w * 0.60, y + h * 0.62, 136, 72), floor=0),
         PropState(f"{building_id}-crate", "crate", RectState(x + 96, y + h - 166, 84, 84), floor=0),
         PropState(f"{building_id}-repair", "repair_table", RectState(x + 72, y + h - 96, 132, 58), floor=0),
-        PropState(f"{building_id}-bench", "work_bench", RectState(x + w * 0.58, y + 84, 144, 62), floor=-1),
+        PropState(f"{building_id}-bench", "work_bench", RectState(x + w * 0.58, y + 84, 144, 62), floor=1),
         PropState(f"{building_id}-basement-shelf", "shelf", RectState(x + 92, y + 96, 92, 160), floor=-1),
+        PropState(f"{building_id}-basement-locker", "cabinet", RectState(x + w - 158, y + h - 238, 88, 138), floor=-1),
         PropState(f"{building_id}-upper-bed", "bed", RectState(x + 82, y + 90, 142, 74), floor=1),
         PropState(f"{building_id}-upper-cabinet", "cabinet", RectState(x + w - 150, y + 100, 86, 126), floor=2),
         PropState(f"{building_id}-barrel-a", "barrel", RectState(x - 84, y + h * 0.32, 46, 46), floor=0),
@@ -77,6 +83,23 @@ def _corridor(start: Vec2, end: Vec2, width: float) -> RectState:
     return RectState(start.x - width * 0.5, y, width, abs(start.y - end.y))
 
 
+def _basement_entry(building: BuildingState) -> Vec2:
+    return Vec2(building.bounds.x + building.bounds.w * 0.5, building.bounds.y + WALL * 0.5)
+
+
+def tunnel_walls(buildings: dict[str, BuildingState]) -> list[RectState]:
+    walls: list[RectState] = []
+    for tunnel in tunnel_segments(buildings):
+        horizontal = tunnel.w >= tunnel.h
+        if horizontal:
+            walls.append(RectState(tunnel.x, tunnel.y - WALL, tunnel.w, WALL))
+            walls.append(RectState(tunnel.x, tunnel.y + tunnel.h, tunnel.w, WALL))
+        else:
+            walls.append(RectState(tunnel.x - WALL, tunnel.y, WALL, tunnel.h))
+            walls.append(RectState(tunnel.x + tunnel.w, tunnel.y, WALL, tunnel.h))
+    return walls
+
+
 def point_building(buildings: dict[str, BuildingState], pos: Vec2) -> str | None:
     for building in buildings.values():
         if building.bounds.contains(pos):
@@ -90,6 +113,8 @@ def all_closed_walls(buildings: dict[str, BuildingState], floor: int = 0) -> lis
         walls.extend(building.walls)
         walls.extend(prop.rect for prop in building.props if prop.floor == floor and prop.blocks)
         walls.extend(door.rect for door in building.doors if not door.open and door.floor == floor)
+    if floor == -1:
+        walls.extend(tunnel_walls(buildings))
     return walls
 
 

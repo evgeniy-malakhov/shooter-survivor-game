@@ -41,6 +41,9 @@ GREEN = (120, 240, 164)
 RED = (255, 91, 111)
 YELLOW = (255, 210, 112)
 PURPLE = (177, 132, 255)
+MINE_MAP_COLOR = (196, 96, 255)
+ONLINE_MINIMAP_MIN_RADIUS = 1400.0
+ONLINE_MINIMAP_MAX_RADIUS = 4200.0
 
 DEFAULT_ICON_MAPPING = {
     "grenade": "granade",
@@ -1084,6 +1087,7 @@ class GameApp:
             self._draw_minimap(snapshot, player)
             if self.state == "online_game":
                 self._draw_connection_status()
+                self._draw_network_notice()
             if self.settings.get("show_zombie_count", False):
                 self._draw_zombie_counter(snapshot)
             self._draw_context_prompt(snapshot, player, camera)
@@ -1097,8 +1101,6 @@ class GameApp:
                 self._draw_crafting(player)
             if self.settings_open:
                 self._draw_settings()
-        if self.state == "online_game" and self.online.error:
-            self._draw_text(self.online.error, 26, SCREEN_H - 34, RED)
 
     def _draw_neon_background(self) -> None:
         for i in range(18):
@@ -1304,21 +1306,26 @@ class GameApp:
             sx, sy = self._world_to_screen(mine.pos, camera)
             if not (-180 <= sx <= SCREEN_W + 180 and -180 <= sy <= SCREEN_H + 180):
                 continue
-            base_color = (120, 225, 255) if mine.kind == "mine_light" else RED if mine.kind == "mine_heavy" else YELLOW
+            base_color = MINE_MAP_COLOR if mine.armed else (132, 112, 166)
             blink = 0.5 + 0.5 * math.sin(snapshot.time * 7.2 + mine.rotation)
             alpha = int((72 if mine.armed else 42) + blink * (70 if mine.armed else 18))
             self._draw_dashed_circle((sx, sy), self._world_size(mine.trigger_radius, 8), base_color, mine.rotation, alpha)
             glow = pygame.Surface((58, 58), pygame.SRCALPHA)
             pygame.draw.circle(glow, (*base_color, 44 if mine.armed else 24), (29, 29), 28)
             self.screen.blit(glow, (sx - 29, sy - 29))
-            pygame.draw.circle(self.screen, (8, 11, 16), (sx, sy), 18)
-            pygame.draw.circle(self.screen, base_color if mine.armed else MUTED, (sx, sy), 13)
-            pygame.draw.circle(self.screen, TEXT, (sx, sy), 13, 1)
+            radius = self._world_size(18, 10)
+            points = [
+                (int(sx + math.cos(mine.rotation - math.pi / 2) * radius), int(sy + math.sin(mine.rotation - math.pi / 2) * radius)),
+                (int(sx + math.cos(mine.rotation + math.pi * 0.16) * radius), int(sy + math.sin(mine.rotation + math.pi * 0.16) * radius)),
+                (int(sx + math.cos(mine.rotation + math.pi * 0.84) * radius), int(sy + math.sin(mine.rotation + math.pi * 0.84) * radius)),
+            ]
+            pygame.draw.polygon(self.screen, (8, 11, 16), [(x + 2, y + 2) for x, y in points])
+            pygame.draw.polygon(self.screen, base_color if mine.armed else MUTED, points)
+            pygame.draw.polygon(self.screen, TEXT, points, 1)
             if mine.armed and blink > 0.55:
                 pygame.draw.circle(self.screen, RED, (sx, sy), 5)
             if not self._draw_item_icon(mine.kind, pygame.Rect(sx - 12, sy - 12, 24, 24)):
-                pygame.draw.line(self.screen, BG, (sx - 8, sy), (sx + 8, sy), 2)
-                pygame.draw.line(self.screen, BG, (sx, sy - 8), (sx, sy + 8), 2)
+                pygame.draw.circle(self.screen, BG, (sx, sy), 4)
 
     def _draw_dashed_circle(
         self,
@@ -1450,15 +1457,20 @@ class GameApp:
         cone_range = self._world_size(module.cone_range if module else 620, 1)
         half_angle = math.radians((module.cone_degrees if module else 58) * 0.5)
         sx, sy = self._world_to_screen(player.pos, camera)
-        points = [
-            (sx, sy),
-            (int(sx + math.cos(player.angle - half_angle) * cone_range), int(sy + math.sin(player.angle - half_angle) * cone_range)),
-            (int(sx + math.cos(player.angle + half_angle) * cone_range), int(sy + math.sin(player.angle + half_angle) * cone_range)),
-        ]
         cone = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
-        color = (255, 238, 168, 38 if soft else 118)
-        pygame.draw.polygon(cone, color, points)
-        pygame.draw.circle(cone, (255, 244, 184, 24), (sx, sy), self._world_size(120, 24))
+        layers = 9 if soft else 4
+        for index in range(layers, 0, -1):
+            ratio = index / layers
+            distance = int(cone_range * ratio)
+            spread = half_angle * (0.76 + 0.24 * ratio)
+            alpha = int((44 if soft else 118) * (1.0 - ratio * 0.62))
+            points = [
+                (sx, sy),
+                (int(sx + math.cos(player.angle - spread) * distance), int(sy + math.sin(player.angle - spread) * distance)),
+                (int(sx + math.cos(player.angle + spread) * distance), int(sy + math.sin(player.angle + spread) * distance)),
+            ]
+            pygame.draw.polygon(cone, (255, 238, 168, max(5, alpha)), points)
+        pygame.draw.circle(cone, (255, 244, 184, 28), (sx, sy), self._world_size(130, 24))
         self.screen.blit(cone, (0, 0))
 
     def _draw_tunnel_darkness(self, player: PlayerState, camera: Vec2) -> None:
@@ -1472,13 +1484,21 @@ class GameApp:
             cone_range = self._world_size(module.cone_range if module else 620, 1)
             half_angle = math.radians((module.cone_degrees if module else 58) * 0.5)
             sx, sy = self._world_to_screen(player.pos, camera)
-            points = [
-                (sx, sy),
-                (int(sx + math.cos(player.angle - half_angle) * cone_range), int(sy + math.sin(player.angle - half_angle) * cone_range)),
-                (int(sx + math.cos(player.angle + half_angle) * cone_range), int(sy + math.sin(player.angle + half_angle) * cone_range)),
-            ]
-            pygame.draw.polygon(darkness, (0, 0, 0, 58), points)
-            pygame.draw.circle(darkness, (0, 0, 0, 70), (sx, sy), self._world_size(112, 24))
+            light = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+            layers = 10
+            for index in range(layers, 0, -1):
+                ratio = index / layers
+                distance = int(cone_range * ratio)
+                spread = half_angle * (0.72 + 0.28 * ratio)
+                alpha = int(160 * (1.0 - ratio * 0.72))
+                points = [
+                    (sx, sy),
+                    (int(sx + math.cos(player.angle - spread) * distance), int(sy + math.sin(player.angle - spread) * distance)),
+                    (int(sx + math.cos(player.angle + spread) * distance), int(sy + math.sin(player.angle + spread) * distance)),
+                ]
+                pygame.draw.polygon(light, (0, 0, 0, max(8, alpha)), points)
+            pygame.draw.circle(light, (0, 0, 0, 138), (sx, sy), self._world_size(128, 24))
+            darkness.blit(light, (0, 0), special_flags=pygame.BLEND_RGBA_SUB)
         self.screen.blit(darkness, (0, 0))
         label = self.tr("hud.dark_flashlight" if not has_flashlight else "hud.dark")
         badge = pygame.Rect(SCREEN_W - 288, SCREEN_H - 126, 260, 34)
@@ -1574,23 +1594,6 @@ class GameApp:
         pygame.draw.rect(self.screen, (33, 40, 58), pygame.Rect(62, 134, 270, 5), border_radius=2)
         pygame.draw.rect(self.screen, YELLOW if player.sprinting else GREEN, pygame.Rect(62, 134, noise_w, 5), border_radius=2)
 
-        weapon = player.active_weapon()
-        active_quick_item = player.quick_items.get(player.active_slot)
-        weapon_title = self.tr("hud.unarmed")
-        ammo = "--"
-        reload_text = ""
-        if weapon:
-            spec = WEAPONS[weapon.key]
-            weapon_title = f"{self.rarity_title(weapon.rarity)} {self.weapon_title(spec.key)}"
-            ammo = f"{weapon.ammo_in_mag}/{weapon.reserve_ammo}"
-            if weapon.reload_left > 0:
-                reload_text = f" {self.tr('hud.reloading')} {weapon.reload_left:.1f}s"
-        elif active_quick_item:
-            weapon_title = self.item_title(active_quick_item.key)
-            ammo = f"x{active_quick_item.amount}"
-        pygame.draw.circle(self.screen, YELLOW, (398, 44), 10)
-        self._draw_text(f"{weapon_title}  {ammo}{reload_text}", 426, 32, TEXT, self.mid)
-
         start_x = 380
         y = SCREEN_H - 72
         for index, slot in enumerate(SLOTS):
@@ -1611,48 +1614,177 @@ class GameApp:
                 self._draw_rarity_badge(rect, quick_item.rarity, compact=True)
                 self._draw_item_icon(quick_item.key, pygame.Rect(rect.x + 22, rect.y + 6, 28, 28))
             self._draw_text_fit(label, rect.inflate(-10, -12), TEXT if weapon or quick_item else MUTED, self.small, center=True)
+        self._draw_weapon_widget(player)
         self._draw_notice(player)
 
+    def _draw_weapon_widget(self, player: PlayerState) -> None:
+        weapon = player.active_weapon()
+        quick_item = player.quick_items.get(player.active_slot)
+        rect = pygame.Rect(SCREEN_W - 322, SCREEN_H - 168, 300, 86)
+        rarity = weapon.rarity if weapon else quick_item.rarity if quick_item else "common"
+        accent = rarity_color(rarity) if weapon or quick_item else MUTED
+        pulse = (math.sin(time.time() * 5.6) + 1.0) * 0.5
+        surface = pygame.Surface(rect.size, pygame.SRCALPHA)
+        pygame.draw.rect(surface, (10, 16, 28, 224), surface.get_rect(), border_radius=11)
+        pygame.draw.rect(surface, (*accent, int(130 + pulse * 60)), surface.get_rect(), 2, border_radius=11)
+        self.screen.blit(surface, rect)
+        icon_rect = pygame.Rect(rect.x + 16, rect.y + 14, 58, 58)
+        pygame.draw.rect(self.screen, (8, 12, 22), icon_rect, border_radius=9)
+        if weapon:
+            self._draw_rarity_frame(icon_rect, weapon.rarity)
+            self._draw_item_icon(weapon.key, icon_rect.inflate(-9, -12), aura=False)
+            title = self.weapon_title(weapon.key)
+            ammo = f"{weapon.ammo_in_mag}/{weapon.reserve_ammo}"
+            subtitle = self.rarity_title(weapon.rarity)
+            self._mini_durability(pygame.Rect(rect.x + 88, rect.y + 60, 182, 18), weapon.durability)
+            if weapon.reload_left > 0:
+                gear_rect = pygame.Rect(rect.right - 44, rect.y + 18, 28, 28)
+                self._draw_item_icon("gear", gear_rect, aura=False, shadow=False)
+                angle = time.time() * 7.0
+                p1 = (int(gear_rect.centerx + math.cos(angle) * 16), int(gear_rect.centery + math.sin(angle) * 16))
+                pygame.draw.line(self.screen, YELLOW, gear_rect.center, p1, 2)
+                self._draw_text_fit(f"{weapon.reload_left:.1f}s", pygame.Rect(rect.right - 58, rect.y + 50, 44, 18), YELLOW, self.small, center=True)
+        elif quick_item:
+            self._draw_item_icon(quick_item.key, icon_rect.inflate(-10, -10), aura=False)
+            title = self.item_title(quick_item.key)
+            ammo = f"x{quick_item.amount}"
+            subtitle = self.rarity_title(quick_item.rarity)
+        else:
+            title = self.tr("hud.unarmed")
+            ammo = "--"
+            subtitle = self._floor_label(player.floor)
+            pygame.draw.circle(self.screen, MUTED, icon_rect.center, 14, 2)
+        self._draw_text_fit(title, pygame.Rect(rect.x + 88, rect.y + 14, 160, 22), TEXT, self.font)
+        self._draw_text_fit(subtitle, pygame.Rect(rect.x + 88, rect.y + 38, 120, 18), accent, self.small)
+        self._draw_text_fit(ammo, pygame.Rect(rect.right - 86, rect.y + 52, 64, 24), YELLOW if weapon or quick_item else MUTED, self.mid, center=True)
+
     def _minimap_rect(self) -> pygame.Rect:
-        size = 226 if self.minimap_big else 156
+        size = 248 if self.minimap_big else 176
         return pygame.Rect(SCREEN_W - size - 18, 18, size, int(size * MAP_HEIGHT / MAP_WIDTH))
 
     def _draw_minimap(self, snapshot: WorldSnapshot, player: PlayerState | None) -> None:
         rect = self._minimap_rect()
         pygame.draw.rect(self.screen, PANEL, rect, border_radius=8)
         pygame.draw.rect(self.screen, CYAN, rect, 2, border_radius=8)
+        bounds = self._minimap_world_bounds(rect, snapshot, player)
+        min_x, min_y, max_x, max_y = bounds
+        span_x = max(1.0, max_x - min_x)
+        span_y = max(1.0, max_y - min_y)
 
         def mp(pos: Vec2) -> tuple[int, int]:
-            return int(rect.x + pos.x / MAP_WIDTH * rect.w), int(rect.y + pos.y / MAP_HEIGHT * rect.h)
+            return int(rect.x + (pos.x - min_x) / span_x * rect.w), int(rect.y + (pos.y - min_y) / span_y * rect.h)
+
+        def inside(pos: Vec2) -> bool:
+            return min_x <= pos.x <= max_x and min_y <= pos.y <= max_y
 
         for item in snapshot.loot.values():
             if player and item.floor != player.floor:
+                continue
+            if not inside(item.pos):
                 continue
             pygame.draw.circle(self.screen, YELLOW, mp(item.pos), 2)
         for mine in snapshot.mines.values():
             if player and mine.floor != player.floor:
                 continue
-            pygame.draw.circle(self.screen, RED if mine.armed else YELLOW, mp(mine.pos), 3)
+            if not inside(mine.pos):
+                continue
+            self._draw_minimap_triangle(mp(mine.pos), MINE_MAP_COLOR if mine.armed else (136, 102, 170), mine.rotation, 5)
         for zombie in snapshot.zombies.values():
             if player and zombie.floor != player.floor:
                 continue
+            if not inside(zombie.pos):
+                continue
             pygame.draw.circle(self.screen, RED, mp(zombie.pos), 3)
         for other in snapshot.players.values():
-            pygame.draw.circle(self.screen, CYAN if player and other.id == player.id else GREEN, mp(other.pos), 4)
+            if player and other.floor != player.floor:
+                continue
+            color = CYAN if player and other.id == player.id else GREEN
+            if inside(other.pos):
+                pygame.draw.circle(self.screen, color, mp(other.pos), 4)
+            elif self.state == "online_game" and player and other.id != player.id:
+                edge, angle = self._minimap_edge_marker(rect, other.pos, bounds)
+                self._draw_minimap_triangle(edge, color, angle, 6)
         for building in snapshot.buildings.values():
+            if not self._rect_intersects_bounds(building.bounds, bounds):
+                continue
             mini = pygame.Rect(
-                int(rect.x + building.bounds.x / MAP_WIDTH * rect.w),
-                int(rect.y + building.bounds.y / MAP_HEIGHT * rect.h),
-                max(2, int(building.bounds.w / MAP_WIDTH * rect.w)),
-                max(2, int(building.bounds.h / MAP_HEIGHT * rect.h)),
+                int(rect.x + (building.bounds.x - min_x) / span_x * rect.w),
+                int(rect.y + (building.bounds.y - min_y) / span_y * rect.h),
+                max(2, int(building.bounds.w / span_x * rect.w)),
+                max(2, int(building.bounds.h / span_y * rect.h)),
             )
+            mini.clamp_ip(rect)
             pygame.draw.rect(self.screen, (84, 95, 118), mini, 1)
+        if player:
+            floor_badge = pygame.Rect(rect.x + 8, rect.bottom - 22, 44, 16)
+            pygame.draw.rect(self.screen, (10, 16, 28), floor_badge, border_radius=5)
+            pygame.draw.rect(self.screen, CYAN, floor_badge, 1, border_radius=5)
+            self._draw_text_fit(self._floor_label(player.floor), floor_badge.inflate(-4, -2), TEXT, self.small, center=True)
+
+    def _minimap_world_bounds(self, rect: pygame.Rect, snapshot: WorldSnapshot, player: PlayerState | None) -> tuple[float, float, float, float]:
+        map_w = float(snapshot.map_width or MAP_WIDTH)
+        map_h = float(snapshot.map_height or MAP_HEIGHT)
+        if self.state != "online_game" or not player:
+            return (0.0, 0.0, map_w, map_h)
+        radius_x = max(ONLINE_MINIMAP_MIN_RADIUS, min(ONLINE_MINIMAP_MAX_RADIUS, self.online.server_building_interest_radius))
+        radius_y = radius_x * rect.h / max(1, rect.w)
+        min_x = max(0.0, player.pos.x - radius_x)
+        max_x = min(map_w, player.pos.x + radius_x)
+        min_y = max(0.0, player.pos.y - radius_y)
+        max_y = min(map_h, player.pos.y + radius_y)
+        if max_x - min_x < radius_x:
+            if min_x <= 0.0:
+                max_x = min(map_w, min_x + radius_x * 2.0)
+            elif max_x >= map_w:
+                min_x = max(0.0, max_x - radius_x * 2.0)
+        if max_y - min_y < radius_y:
+            if min_y <= 0.0:
+                max_y = min(map_h, min_y + radius_y * 2.0)
+            elif max_y >= map_h:
+                min_y = max(0.0, max_y - radius_y * 2.0)
+        return (min_x, min_y, max_x, max_y)
+
+    def _rect_intersects_bounds(self, rect: RectState, bounds: tuple[float, float, float, float]) -> bool:
+        min_x, min_y, max_x, max_y = bounds
+        return rect.x <= max_x and rect.x + rect.w >= min_x and rect.y <= max_y and rect.y + rect.h >= min_y
+
+    def _minimap_edge_marker(
+        self,
+        rect: pygame.Rect,
+        pos: Vec2,
+        bounds: tuple[float, float, float, float],
+    ) -> tuple[tuple[int, int], float]:
+        min_x, min_y, max_x, max_y = bounds
+        span_x = max(1.0, max_x - min_x)
+        span_y = max(1.0, max_y - min_y)
+        px = rect.x + (pos.x - min_x) / span_x * rect.w
+        py = rect.y + (pos.y - min_y) / span_y * rect.h
+        clamped_x = max(rect.x + 8, min(rect.right - 8, int(px)))
+        clamped_y = max(rect.y + 8, min(rect.bottom - 8, int(py)))
+        angle = math.atan2(py - rect.centery, px - rect.centerx)
+        return (clamped_x, clamped_y), angle
+
+    def _draw_minimap_triangle(
+        self,
+        center: tuple[int, int],
+        color: tuple[int, int, int],
+        angle: float,
+        radius: int,
+    ) -> None:
+        points = [
+            (int(center[0] + math.cos(angle) * radius), int(center[1] + math.sin(angle) * radius)),
+            (int(center[0] + math.cos(angle + math.tau * 0.38) * radius), int(center[1] + math.sin(angle + math.tau * 0.38) * radius)),
+            (int(center[0] + math.cos(angle - math.tau * 0.38) * radius), int(center[1] + math.sin(angle - math.tau * 0.38) * radius)),
+        ]
+        pygame.draw.polygon(self.screen, (6, 9, 16), [(x + 1, y + 1) for x, y in points])
+        pygame.draw.polygon(self.screen, color, points)
 
     def _draw_connection_status(self) -> None:
-        minimap = self._minimap_rect()
-        rect = pygame.Rect(minimap.x - 116, minimap.y + 6, 96, 40)
         quality = self.online.connection_quality()
-        ping = self._format_ping(self.online.ping_ms)
+        if quality == "stable-connection":
+            return
+        minimap = self._minimap_rect()
+        rect = pygame.Rect(minimap.x - 54, minimap.y + 8, 38, 38)
         color = {
             "stable-connection": GREEN,
             "unstable-connection": YELLOW,
@@ -1663,10 +1795,35 @@ class GameApp:
         pygame.draw.rect(surface, (10, 16, 28, 206), surface.get_rect(), border_radius=8)
         pygame.draw.rect(surface, (*color, 170), surface.get_rect(), 1, border_radius=8)
         self.screen.blit(surface, rect)
-        icon_rect = pygame.Rect(rect.x + 8, rect.y + 7, 26, 26)
+        icon_rect = pygame.Rect(rect.x + 7, rect.y + 7, 24, 24)
         if not self._draw_item_icon(quality, icon_rect, aura=False, shadow=False):
             pygame.draw.circle(self.screen, color, icon_rect.center, 8)
-        self._draw_text_fit(ping, pygame.Rect(rect.x + 40, rect.y + 10, rect.w - 48, 18), color, self.small)
+
+    def _draw_network_notice(self) -> None:
+        quality = self.online.connection_quality()
+        if quality == "stable-connection" and not self.online.error:
+            return
+        color = {
+            "unstable-connection": YELLOW,
+            "packet-lost": RED,
+            "lost-connection": RED,
+        }.get(quality, CYAN)
+        key = {
+            "unstable-connection": "online.notice.unstable",
+            "packet-lost": "online.notice.packet_loss",
+            "lost-connection": "online.notice.lost",
+        }.get(quality, "online.notice.reconnecting")
+        text = self.online.error if self.online.error and quality == "lost-connection" else self.tr(key)
+        rect = pygame.Rect(0, 0, 420, 38)
+        rect.center = (SCREEN_W // 2, 34)
+        surface = pygame.Surface(rect.size, pygame.SRCALPHA)
+        pygame.draw.rect(surface, (9, 14, 26, 220), surface.get_rect(), border_radius=10)
+        pygame.draw.rect(surface, (*color, 180), surface.get_rect(), 1, border_radius=10)
+        self.screen.blit(surface, rect)
+        icon_rect = pygame.Rect(rect.x + 14, rect.y + 7, 24, 24)
+        if not self._draw_item_icon(quality, icon_rect, aura=False, shadow=False):
+            pygame.draw.circle(self.screen, color, icon_rect.center, 8)
+        self._draw_text_fit(text, pygame.Rect(rect.x + 46, rect.y + 9, rect.w - 62, 18), TEXT, self.small, center=True)
 
     def _format_ping(self, ping_ms: float | int | None) -> str:
         if ping_ms is None or float(ping_ms) <= 0.0:
@@ -1676,9 +1833,8 @@ class GameApp:
         return f"{float(ping_ms):.0f} ms"
 
     def _draw_zombie_counter(self, snapshot: WorldSnapshot) -> None:
-        size = 226 if self.minimap_big else 156
-        minimap_h = int(size * MAP_HEIGHT / MAP_WIDTH)
-        rect = pygame.Rect(SCREEN_W - size - 18, 18 + minimap_h + 12, size, 42)
+        minimap = self._minimap_rect()
+        rect = pygame.Rect(minimap.x, minimap.bottom + 12, minimap.w, 42)
         count = len(snapshot.zombies)
         pulse = (math.sin(time.time() * 3.6) + 1.0) * 0.5
         bg = pygame.Surface(rect.size, pygame.SRCALPHA)
@@ -1710,6 +1866,8 @@ class GameApp:
         prompt = ""
         for building in snapshot.buildings.values():
             for door in building.doors:
+                if door.floor != player.floor:
+                    continue
                 if door.rect.center.distance_to(player.pos) <= 86:
                     prompt = self.tr("prompt.close_door") if door.open else self.tr("prompt.open_door")
             for stairs in building.stairs:
@@ -1740,7 +1898,7 @@ class GameApp:
         overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
         overlay.fill((4, 7, 18, 206))
         self.screen.blit(overlay, (0, 0))
-        panel = pygame.Rect((SCREEN_W - 900) // 2, 96, 900, 520)
+        panel = pygame.Rect((SCREEN_W - 980) // 2, 96, 980, 520)
         glow = pygame.Surface(panel.inflate(26, 26).size, pygame.SRCALPHA)
         pygame.draw.rect(glow, (76, 225, 255, 34), glow.get_rect(), border_radius=16)
         pygame.draw.rect(glow, (255, 91, 111, 24), glow.get_rect().inflate(-10, -10), 2, border_radius=14)
@@ -1751,6 +1909,7 @@ class GameApp:
         self._draw_text(self.tr("scoreboard.title"), panel.x + 34, panel.y + 24, TEXT, self.big)
         headers = [
             self.tr("scoreboard.player"),
+            self.tr("scoreboard.floor"),
             self.tr("scoreboard.total"),
             self.tr("scoreboard.walker"),
             self.tr("scoreboard.runner"),
@@ -1759,7 +1918,7 @@ class GameApp:
             self.tr("scoreboard.ping"),
             self.tr("scoreboard.status"),
         ]
-        xs = [panel.x + 42, panel.x + 292, panel.x + 368, panel.x + 448, panel.x + 528, panel.x + 608, panel.x + 690, panel.x + 770]
+        xs = [panel.x + 42, panel.x + 286, panel.x + 350, panel.x + 426, panel.x + 506, panel.x + 586, panel.x + 666, panel.x + 746, panel.x + 832]
         for x, header in zip(xs, headers):
             self._draw_text(header, x, panel.y + 112, CYAN if header == self.tr("scoreboard.total") else MUTED, self.small)
         y = panel.y + 150
@@ -1778,6 +1937,7 @@ class GameApp:
                 pygame.draw.circle(self.screen, GREEN, (xs[0] + 10, y + 9), 6)
                 name_x = xs[0] + 22
             values = [
+                self._floor_label(player.floor),
                 str(player.score),
                 str(player.kills_by_kind.get("walker", 0)),
                 str(player.kills_by_kind.get("runner", 0)),
@@ -1801,7 +1961,13 @@ class GameApp:
                     color = RED if value == self.tr("state.dead") else TEXT
                     self._draw_text_fit(value, pygame.Rect(x + 28, y, panel.right - x - 48, 20), color, self.small)
                     continue
-                color = YELLOW if x == xs[1] else TEXT
+                if index == 1:
+                    badge = pygame.Rect(x, y - 2, 46, 24)
+                    pygame.draw.rect(self.screen, (11, 18, 30), badge, border_radius=7)
+                    pygame.draw.rect(self.screen, PURPLE if player.floor < 0 else CYAN, badge, 1, border_radius=7)
+                    self._draw_text_fit(value, badge.inflate(-6, -3), TEXT, self.small, center=True)
+                    continue
+                color = YELLOW if index == 2 else TEXT
                 if index == len(values) - 1 and value == "999+":
                     color = RED
                 self._draw_text_fit(value, pygame.Rect(x, y, 66, 22), color, self.font)
