@@ -6,3 +6,4 @@ __pycache__
 client_settings.json
 server_data/
 load_tests/results/
+/server_go/server_go/

@@ -33,6 +33,16 @@
     "clients": 50,
     "duration_seconds": 180,
     "ramp_up_seconds": 70,
+    "input_hz": 60,
+    "command_rate_per_minute": 5,
+    "disconnect_rate_per_minute": 0.08,
+    "packet_delay_ms": 35,
+    "packet_jitter_ms": 90
+  },
+  "100": {
+    "clients": 100,
+    "duration_seconds": 180,
+    "ramp_up_seconds": 70,
     "input_hz": 19,
     "command_rate_per_minute": 5,
     "disconnect_rate_per_minute": 0.08,
