@@ -1,16 +1,16 @@
 {
   "smoke": {
-    "clients": 10,
-    "duration_seconds": 20,
+    "clients": 4,
+    "duration_seconds": 60,
     "ramp_up_seconds": 5,
-    "input_hz": 12,
+    "input_hz": 27,
     "command_rate_per_minute": 6,
     "disconnect_rate_per_minute": 0.15,
-    "packet_delay_ms": 15,
-    "packet_jitter_ms": 35
+    "packet_delay_ms": 5,
+    "packet_jitter_ms": 15
   },
-  "50": {
-    "clients": 50,
+  "10": {
+    "clients": 10,
     "duration_seconds": 90,
     "ramp_up_seconds": 20,
     "input_hz": 15,
@@ -19,21 +19,21 @@
     "packet_delay_ms": 20,
     "packet_jitter_ms": 60
   },
-  "100": {
-    "clients": 100,
+  "25": {
+    "clients": 25,
     "duration_seconds": 120,
     "ramp_up_seconds": 35,
-    "input_hz": 15,
+    "input_hz": 22,
     "command_rate_per_minute": 7,
     "disconnect_rate_per_minute": 0.10,
     "packet_delay_ms": 25,
     "packet_jitter_ms": 70
   },
-  "300": {
-    "clients": 300,
+  "50": {
+    "clients": 50,
     "duration_seconds": 180,
     "ramp_up_seconds": 70,
-    "input_hz": 12,
+    "input_hz": 19,
     "command_rate_per_minute": 5,
     "disconnect_rate_per_minute": 0.08,
     "packet_delay_ms": 35,

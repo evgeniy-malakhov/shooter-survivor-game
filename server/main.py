@@ -17,7 +17,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mode", default="survival", choices=("survival", "pvp"), help="Server mode. Use pvp to run without zombies.")
     parser.add_argument("--pvp", action="store_true", help="Shortcut for --mode pvp.")
     parser.add_argument("--profile", action="store_true", help="Print periodic server timing and queue metrics.")
-    parser.add_argument("--zombie-workers", type=int, default=None, help="Override the zombie AI worker thread count.")
+    parser.add_argument("--zombie-workers", type=int, default=None, help="Override the zombie AI decision process count.")
     parser.add_argument("--no-uvloop", action="store_true", help="Disable uvloop even when it is installed.")
     parser.add_argument("--transport", default="tcp", choices=("tcp", "udp"), help="Network transport. UDP is reserved for future work.")
     return parser.parse_args()

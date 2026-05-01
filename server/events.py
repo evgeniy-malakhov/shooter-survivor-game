@@ -4,6 +4,7 @@ from typing import Any
 
 
 MAX_EVENTS_PER_TICK = 96
+POSITION_EVENT_RADIUS = 2200.0
 
 
 def derive_events(previous: dict[str, Any] | None, current: dict[str, Any], tick: int) -> list[dict[str, Any]]:
@@ -48,6 +49,9 @@ def filter_events_for_snapshot(
         }
         if ids & visible_ids:
             filtered.append(event)
+            continue
+        if _position_event_visible(event, snapshot, player_id):
+            filtered.append(event)
     return filtered
 
 
@@ -63,8 +67,10 @@ def _append_new_projectiles(events: list[dict[str, Any]], previous: dict[str, An
                 "tick": tick,
                 "projectile_id": projectile_id,
                 "owner_id": projectile.get("owner_id", ""),
+                "weapon_key": projectile.get("weapon_key", ""),
                 "x": pos.get("x", 0.0),
                 "y": pos.get("y", 0.0),
+                "floor": projectile.get("floor", 0),
             }
         )
 
@@ -92,6 +98,10 @@ def _append_removed_entities(
         }
         if "owner_id" in entity:
             event["owner_id"] = entity.get("owner_id")
+        if "facing" in entity:
+            event["facing"] = entity.get("facing", 0.0)
+        if "angle" in entity:
+            event["angle"] = entity.get("angle", 0.0)
         if collection in {"zombies", "loot", "grenades", "mines"}:
             event["entity_kind"] = entity.get("kind", entity.get("payload", ""))
         events.append(event)
@@ -116,7 +126,19 @@ def _append_health_events(events: list[dict[str, Any]], previous: dict[str, Any]
                     }
                 )
             if previous_entity.get("alive", True) and not current_entity.get("alive", True):
-                events.append({"kind": "player_died", "tick": tick, "player_id": entity_id})
+                pos = _pos(current_entity)
+                events.append(
+                    {
+                        "kind": "player_died",
+                        "tick": tick,
+                        "player_id": entity_id,
+                        "name": current_entity.get("name", "Player"),
+                        "x": pos.get("x", 0.0),
+                        "y": pos.get("y", 0.0),
+                        "floor": current_entity.get("floor", 0),
+                        "angle": current_entity.get("angle", 0.0),
+                    }
+                )
 
 
 def _collection(snapshot: dict[str, Any], key: str) -> dict[str, Any]:
@@ -127,3 +149,20 @@ def _collection(snapshot: dict[str, Any], key: str) -> dict[str, Any]:
 def _pos(entity: dict[str, Any]) -> dict[str, Any]:
     pos = entity.get("pos", {})
     return pos if isinstance(pos, dict) else {}
+
+
+def _position_event_visible(event: dict[str, Any], snapshot: dict[str, Any], player_id: str) -> bool:
+    if "x" not in event or "y" not in event:
+        return False
+    player = _collection(snapshot, "players").get(player_id)
+    if not isinstance(player, dict):
+        return False
+    player_pos = _pos(player)
+    try:
+        if int(event.get("floor", 0)) != int(player.get("floor", 0)):
+            return False
+        dx = float(event.get("x", 0.0)) - float(player_pos.get("x", 0.0))
+        dy = float(event.get("y", 0.0)) - float(player_pos.get("y", 0.0))
+    except (TypeError, ValueError):
+        return False
+    return dx * dx + dy * dy <= POSITION_EVENT_RADIUS * POSITION_EVENT_RADIUS

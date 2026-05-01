@@ -11,6 +11,20 @@
     "cone_range": 620,
     "cone_degrees": 58
   },
+  "silencer": {
+    "slot": "utility",
+    "title": "Silencer",
+    "spread_multiplier": 1.08,
+    "noise_multiplier": 0.0
+  },
+  "compensator": {
+    "slot": "utility",
+    "title": "Compensator",
+    "spread_multiplier": 0.95,
+    "noise_multiplier": 1.12,
+    "fire_rate_bonus": 0.03,
+    "fire_rate_rarity_step": 0.02
+  },
   "extended_mag": {
     "slot": "magazine",
     "title": "Extended Magazine",

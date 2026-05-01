@@ -25,6 +25,8 @@
   "repair_kit": "repair_kit",
   "laser_module": "laser_module",
   "flashlight_module": "flashlight_module",
+  "silencer": "silencer",
+  "compensator": "compensator",
   "extended_mag": "extended_mag",
   "pistol": "pistol",
   "smg": "smg",

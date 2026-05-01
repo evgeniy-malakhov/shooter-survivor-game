@@ -10,10 +10,12 @@ All files in this folder are UTF-8 JSON, except this documentation file. Restart
 - `rarities.json` configures item rarity colors and bonuses.
 - `explosives.json` configures thrown grenades and placed mines.
 - `weapon_modules.json` configures laser, flashlight and magazine modules.
+- `audio.json` configures menu music, action sound folders, weapon sound mapping and spatial shot falloff.
 - `crafting.json` configures crafted item rarity chances.
 - `backpack.json` configures the starting backpack.
 - `item_stacks.json` configures stack sizes for backpack items.
 - `icon_mapping.json` maps game ids to PNG filenames in `images/`.
+- `death_effects.json` configures client-side corpse, blood spread and fade timings.
 - `server.json` configures server networking, interest management, output queues and profiling thresholds.
 - `difficulty/*.json` configures world difficulty presets.
 
@@ -145,6 +147,35 @@ Fields:
 
 Higher rarity weapons and armor are shown with their rarity color on the map and in inventory UI.
 
+## Death effects
+
+`death_effects.json` controls visual-only death effects. These effects are not physics entities: bullets, players and zombies ignore corpses and blood.
+
+- `corpse_seconds`: how long a zombie corpse or fresh player death marker remains visible.
+- `corpse_fade_seconds`: how long the final fade-out lasts.
+- `blood_seconds`: how long the blood pool remains visible.
+- `blood_spread_seconds`: how long the blood pool keeps expanding.
+- `blood_fade_seconds`: how long the final blood fade-out lasts.
+- `blood_start_radius` / `blood_end_radius`: world-space radius range for the spreading blood pool.
+- `blood_alpha`: maximum blood opacity.
+- `corpse_dark_alpha`: darkness applied over dead zombie bodies.
+- `player_cross_size` / `player_cross_width`: black cross size and stroke width for dead players.
+- `max_effects`: maximum number of active local death effects kept by the client.
+
+## Audio
+
+`audio.json` keeps sound asset routing out of code:
+
+- `menu_music`: relative or absolute path to the menu music MP3.
+- `actions_dir`: folder containing short action sounds such as shots, reloads and empty weapon clicks.
+- `weapon_sounds`: per-weapon mapping for `shot`, `reload` and `empty` sound keys. Sound keys match filenames in `actions_dir` without extension.
+- `shot_hearing_distance`: maximum world distance where remote shots are audible.
+- `shot_full_volume_distance`: distance where shots still play at full volume before falloff begins.
+- `different_floor_volume_multiplier`: volume multiplier for sounds on another building floor.
+- `min_spatial_volume`: cutoff below which very quiet distant sounds are skipped.
+
+The client has three audio sliders: master volume affects every sound, music affects menu music, and effects affects shots, reloads and empty weapon clicks.
+
 ## Explosives
 
 `explosives.json` has two sections: `grenades` and `mines`.
@@ -233,6 +264,12 @@ Difficulty is applied by the authoritative server in online mode.
 
 - `simulation.tick_rate`: authoritative simulation ticks per second. Higher values improve responsiveness but increase CPU cost.
 - `simulation.snapshot_rate`: maximum snapshot send rate per client before adaptive throttling. The default keeps small 1-15 player sessions at 24 Hz while the client predicts local movement every rendered frame.
+- `simulation.zombie_ai_decision_rate`: near-player zombie perception/decision rate in Hz. Movement and collisions still run every server tick; this only controls expensive sight/hearing decisions.
+- `simulation.zombie_ai_far_decision_rate`: slower perception rate for zombies outside the active player radius.
+- `simulation.zombie_ai_active_radius`: player distance that promotes a zombie to the near decision rate.
+- `simulation.zombie_ai_far_radius`: maximum distance used when selecting players for zombie AI decisions before expensive line-of-sight checks.
+- `simulation.zombie_ai_batch_size`: maximum zombie decision tasks scheduled per simulation tick. This staggers AI work instead of making every zombie think on the same frame.
+- `simulation.zombie_ai_process_workers`: process workers used for zombie AI decisions. Use `0` to keep decisions in the simulation thread, or override at launch with `--zombie-workers`.
 - `network.max_clients`: hard cap for simultaneously connected players. Resume tickets do not count as connected players, but they still keep players in the world until timeout.
 - `network.listen_backlog`: TCP accept backlog for connection bursts during load tests or server-list joins.
 - `network.interest_radius`: radius around each player for high-frequency entities such as zombies, loot, projectiles, grenades, mines and poison pools.

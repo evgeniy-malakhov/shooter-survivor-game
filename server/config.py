@@ -44,6 +44,12 @@ class NetworkTuning:
 class SimulationTuning:
     tick_rate: int = 30
     snapshot_rate: int = 24
+    zombie_ai_decision_rate: float = 6.0
+    zombie_ai_far_decision_rate: float = 2.0
+    zombie_ai_active_radius: float = 1800.0
+    zombie_ai_far_radius: float = 3200.0
+    zombie_ai_batch_size: int = 8
+    zombie_ai_process_workers: int = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +106,37 @@ def _load_simulation(raw: Any) -> SimulationTuning:
     return SimulationTuning(
         tick_rate=_int(data, "tick_rate", fallback.tick_rate, minimum=5),
         snapshot_rate=_int(data, "snapshot_rate", fallback.snapshot_rate, minimum=1),
+        zombie_ai_decision_rate=_float(
+            data,
+            "zombie_ai_decision_rate",
+            fallback.zombie_ai_decision_rate,
+            minimum=0.25,
+        ),
+        zombie_ai_far_decision_rate=_float(
+            data,
+            "zombie_ai_far_decision_rate",
+            fallback.zombie_ai_far_decision_rate,
+            minimum=0.1,
+        ),
+        zombie_ai_active_radius=_float(
+            data,
+            "zombie_ai_active_radius",
+            fallback.zombie_ai_active_radius,
+            minimum=240.0,
+        ),
+        zombie_ai_far_radius=_float(
+            data,
+            "zombie_ai_far_radius",
+            fallback.zombie_ai_far_radius,
+            minimum=240.0,
+        ),
+        zombie_ai_batch_size=_int(data, "zombie_ai_batch_size", fallback.zombie_ai_batch_size, minimum=1),
+        zombie_ai_process_workers=_int(
+            data,
+            "zombie_ai_process_workers",
+            fallback.zombie_ai_process_workers,
+            minimum=0,
+        ),
     )
 
 

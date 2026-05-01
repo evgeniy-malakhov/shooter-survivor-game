@@ -8,8 +8,8 @@ from shared.models import ArmorSpec, WeaponSpec, ZombieSpec
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "configs"
 
-MAP_WIDTH = 9600
-MAP_HEIGHT = 6600
+MAP_WIDTH = 28800
+MAP_HEIGHT = 19800
 TICK_RATE = 30
 SNAPSHOT_RATE = 20
 INITIAL_ZOMBIES = 8
@@ -23,6 +23,7 @@ SNEAK_NOISE = 70.0
 WALK_NOISE = 230.0
 SPRINT_NOISE = 520.0
 SHOT_NOISE = 850.0
+UNARMED_MELEE_NOISE = WALK_NOISE * 0.5
 SPRINT_MULTIPLIER = 1.72
 
 SLOTS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]

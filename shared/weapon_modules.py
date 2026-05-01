@@ -18,6 +18,9 @@ class WeaponModuleSpec:
     cone_degrees: float = 0.0
     spread_multiplier: float = 1.0
     magazine_multiplier: float = 1.0
+    noise_multiplier: float = 1.0
+    fire_rate_bonus: float = 0.0
+    fire_rate_rarity_step: float = 0.0
 
 
 def load_weapon_modules() -> dict[str, WeaponModuleSpec]:
@@ -34,6 +37,9 @@ def load_weapon_modules() -> dict[str, WeaponModuleSpec]:
             cone_degrees=float(values.get("cone_degrees", 0.0)),
             spread_multiplier=max(0.05, float(values.get("spread_multiplier", 1.0))),
             magazine_multiplier=max(1.0, float(values.get("magazine_multiplier", 1.0))),
+            noise_multiplier=max(0.0, float(values.get("noise_multiplier", 1.0))),
+            fire_rate_bonus=max(0.0, float(values.get("fire_rate_bonus", 0.0))),
+            fire_rate_rarity_step=max(0.0, float(values.get("fire_rate_rarity_step", 0.0))),
         )
     return modules
 

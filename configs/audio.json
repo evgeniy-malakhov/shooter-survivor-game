@@ -1,0 +1,30 @@
+{
+  "menu_music": "assets/menu/AtriumCarceri-Reunion.mp3",
+  "actions_dir": "assets/actions",
+  "shot_hearing_distance": 1900.0,
+  "shot_full_volume_distance": 220.0,
+  "different_floor_volume_multiplier": 0.28,
+  "min_spatial_volume": 0.02,
+  "weapon_sounds": {
+    "pistol": {
+      "shot": "pistol",
+      "reload": "pistol_reload",
+      "empty": "empty"
+    },
+    "rifle": {
+      "shot": "rifle",
+      "reload": "rifle_reload",
+      "empty": "empty"
+    },
+    "shotgun": {
+      "shot": "shotgun",
+      "reload": "reload",
+      "empty": "empty"
+    },
+    "smg": {
+      "shot": "smg",
+      "reload": "reload",
+      "empty": "empty"
+    }
+  }
+}

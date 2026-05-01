@@ -1,7 +1,13 @@
 {
   "simulation": {
     "tick_rate": 30,
-    "snapshot_rate": 30
+    "snapshot_rate": 30,
+    "zombie_ai_decision_rate": 6,
+    "zombie_ai_far_decision_rate": 2,
+    "zombie_ai_active_radius": 1800,
+    "zombie_ai_far_radius": 3200,
+    "zombie_ai_batch_size": 8,
+    "zombie_ai_process_workers": 2
   },
   "network": {
     "max_clients": 50,

@@ -318,9 +318,11 @@ class PlayerState:
     healing_left: float = 0.0
     healing_rate: float = 0.0
     healing_pool: float = 0.0
+    healing_stacks: int = 0
     poison_left: float = 0.0
     poison_tick: float = 0.0
     poison_damage: int = 0
+    melee_cooldown: float = 0.0
     notice: str = ""
     notice_timer: float = 0.0
     ping_ms: int = 0
@@ -357,9 +359,11 @@ class PlayerState:
             "healing_left": round(self.healing_left, 3),
             "healing_rate": round(self.healing_rate, 3),
             "healing_pool": round(self.healing_pool, 3),
+            "healing_stacks": self.healing_stacks,
             "poison_left": round(self.poison_left, 3),
             "poison_tick": round(self.poison_tick, 3),
             "poison_damage": self.poison_damage,
+            "melee_cooldown": round(self.melee_cooldown, 3),
             "notice": self.notice,
             "notice_timer": round(self.notice_timer, 3),
             "ping_ms": self.ping_ms,
@@ -401,9 +405,11 @@ class PlayerState:
             healing_left=float(data.get("healing_left", 0.0)),
             healing_rate=float(data.get("healing_rate", 0.0)),
             healing_pool=float(data.get("healing_pool", 0.0)),
+            healing_stacks=max(0, int(data.get("healing_stacks", 0))),
             poison_left=float(data.get("poison_left", 0.0)),
             poison_tick=float(data.get("poison_tick", 0.0)),
             poison_damage=int(data.get("poison_damage", 0)),
+            melee_cooldown=float(data.get("melee_cooldown", 0.0)),
             notice=str(data.get("notice", "")),
             notice_timer=float(data.get("notice_timer", 0.0)),
             ping_ms=int(data.get("ping_ms", 0)),
@@ -499,6 +505,7 @@ class ProjectileState:
     life: float
     radius: float = 5.0
     floor: int = 0
+    weapon_key: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -510,6 +517,7 @@ class ProjectileState:
             "life": round(self.life, 3),
             "radius": self.radius,
             "floor": self.floor,
+            "weapon_key": self.weapon_key,
         }
 
     @classmethod
@@ -523,6 +531,7 @@ class ProjectileState:
             life=float(data.get("life", 0.0)),
             radius=float(data.get("radius", 5.0)),
             floor=int(data.get("floor", 0)),
+            weapon_key=str(data.get("weapon_key", "")),
         )
 
 
@@ -710,6 +719,7 @@ class InputCommand:
     aim_x: float = 0.0
     aim_y: float = 0.0
     shooting: bool = False
+    alt_attack: bool = False
     reload: bool = False
     pickup: bool = False
     interact: bool = False
@@ -733,6 +743,7 @@ class InputCommand:
             "aim_x": round(self.aim_x, 3),
             "aim_y": round(self.aim_y, 3),
             "shooting": self.shooting,
+            "alt_attack": self.alt_attack,
             "reload": self.reload,
             "pickup": self.pickup,
             "interact": self.interact,
@@ -758,6 +769,7 @@ class InputCommand:
             aim_x=float(data.get("aim_x", 0.0)),
             aim_y=float(data.get("aim_y", 0.0)),
             shooting=bool(data.get("shooting", False)),
+            alt_attack=bool(data.get("alt_attack", False)),
             reload=bool(data.get("reload", False)),
             pickup=bool(data.get("pickup", False)),
             interact=bool(data.get("interact", False)),

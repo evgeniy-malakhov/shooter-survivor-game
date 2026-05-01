@@ -281,6 +281,7 @@ def _pack_projectile(entity: dict[str, Any]) -> list[Any]:
         _q(entity.get("life"), 1000),
         _q(entity.get("radius", 5.0)),
         int(entity.get("floor", 0)),
+        entity.get("weapon_key", ""),
     ]
 
 
@@ -294,6 +295,7 @@ def _unpack_projectile(row: list[Any]) -> dict[str, Any]:
         "life": _uq(_get(row, 7, 0), 1000),
         "radius": _uq(_get(row, 8, 50)),
         "floor": int(_get(row, 9, 0)),
+        "weapon_key": str(_get(row, 10, "")),
     }
 
 

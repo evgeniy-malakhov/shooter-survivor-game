@@ -42,7 +42,12 @@ class SimulationRunner:
         tick_rate: int = TICK_RATE,
         snapshot_rate: int = SNAPSHOT_RATE,
         command_queue_limit: int = 128,
-        zombie_workers: int | None = None,
+        zombie_workers: int | None = 0,
+        zombie_ai_decision_rate: float = 6.0,
+        zombie_ai_far_decision_rate: float = 2.0,
+        zombie_ai_active_radius: float = 1800.0,
+        zombie_ai_far_radius: float = 3200.0,
+        zombie_ai_batch_size: int = 8,
         pvp: bool = False,
         tick_observer: Callable[[float], None] | None = None,
         stage_observer: Callable[[str, float], None] | None = None,
@@ -53,6 +58,11 @@ class SimulationRunner:
             initial_zombies=0 if pvp else None,
             max_zombies=0 if pvp else None,
             zombie_workers=0 if pvp else zombie_workers,
+            zombie_ai_decision_rate=zombie_ai_decision_rate,
+            zombie_ai_far_decision_rate=zombie_ai_far_decision_rate,
+            zombie_ai_active_radius=zombie_ai_active_radius,
+            zombie_ai_far_radius=zombie_ai_far_radius,
+            zombie_ai_batch_size=zombie_ai_batch_size,
         )
         self.tick_rate = max(1, int(tick_rate))
         self.snapshot_rate = max(1, int(snapshot_rate))
@@ -518,7 +528,14 @@ class GameServer:
             tick_rate=self.tick_rate,
             snapshot_rate=self.snapshot_rate,
             command_queue_limit=self.tuning.network.command_queue_limit,
-            zombie_workers=zombie_workers,
+            zombie_workers=zombie_workers
+            if zombie_workers is not None
+            else self.tuning.simulation.zombie_ai_process_workers,
+            zombie_ai_decision_rate=self.tuning.simulation.zombie_ai_decision_rate,
+            zombie_ai_far_decision_rate=self.tuning.simulation.zombie_ai_far_decision_rate,
+            zombie_ai_active_radius=self.tuning.simulation.zombie_ai_active_radius,
+            zombie_ai_far_radius=self.tuning.simulation.zombie_ai_far_radius,
+            zombie_ai_batch_size=self.tuning.simulation.zombie_ai_batch_size,
             pvp=pvp,
             tick_observer=self.metrics.observe_tick,
             stage_observer=self.metrics.observe_stage,
@@ -752,7 +769,10 @@ class GameServer:
             server_features=SERVER_FEATURES,
             mode=self.server_mode,
             pvp=self.pvp,
+            interest_radius=self.tuning.network.interest_radius,
+            building_interest_radius=self.tuning.network.building_interest_radius,
         )
+        self._broadcast_player_joined(player.id, name, snapshot.tick, float(snapshot.data.get("time", 0.0)))
         self.log_worker.info(f"player connected: {name} ({player.id})")
         self.persistence.record_session("player_connected", player_id=player.id, name=name)
 
@@ -816,6 +836,8 @@ class GameServer:
             server_features=SERVER_FEATURES,
             mode=self.server_mode,
             pvp=self.pvp,
+            interest_radius=self.tuning.network.interest_radius,
+            building_interest_radius=self.tuning.network.building_interest_radius,
         )
         last_tick = int(message.get("last_snapshot_tick", 0))
         results, events = self.journal.replay_for_player(player_id, last_tick)
@@ -966,6 +988,8 @@ class GameServer:
             "difficulty": self.difficulty_key,
             "mode": self.server_mode,
             "pvp": self.pvp,
+            "interest_radius": self.tuning.network.interest_radius,
+            "building_interest_radius": self.tuning.network.building_interest_radius,
             "tick_ms": round(self.simulation.tick_seconds() * 1000.0, 2),
             "tick_rate": self.tick_rate,
             "snapshot_rate": self.snapshot_rate,
@@ -1408,6 +1432,27 @@ class GameServer:
             events=events,
             channel="reliable",
         )
+
+    def _broadcast_player_joined(self, player_id: str, name: str, tick: int, server_time: float) -> None:
+        event = {
+            "kind": "player_joined",
+            "tick": tick,
+            "server_tick": tick,
+            "time": round(server_time, 3),
+            "player_id": player_id,
+            "name": name,
+        }
+        self.persistence.record_match_event(
+            "domain_event",
+            player_id=player_id,
+            kind="player_joined",
+            tick=tick,
+            payload=event,
+        )
+        for session_id, session in list(self.clients.items()):
+            if session_id == player_id:
+                continue
+            self._queue_events(session, tick, server_time, [event])
 
     def _persist_player_profile(self, player_id: str) -> None:
         profile = self.simulation.player_profile(player_id)

@@ -70,6 +70,8 @@ ITEMS: dict[str, ItemSpec] = {
     "repair_kit": ItemSpec("repair_kit", "Repair Kit", "tool", stack_size=_stack("repair_kit", 4), color=(255, 146, 100)),
     "laser_module": ItemSpec("laser_module", "Laser Sight", "weapon_module", stack_size=_stack("laser_module", 1), color=(255, 84, 98)),
     "flashlight_module": ItemSpec("flashlight_module", "Flashlight", "weapon_module", stack_size=_stack("flashlight_module", 1), color=(255, 238, 148)),
+    "silencer": ItemSpec("silencer", "Silencer", "weapon_module", stack_size=_stack("silencer", 1), color=(156, 198, 255)),
+    "compensator": ItemSpec("compensator", "Compensator", "weapon_module", stack_size=_stack("compensator", 1), color=(255, 196, 142)),
     "extended_mag": ItemSpec("extended_mag", "Extended Magazine", "weapon_module", stack_size=_stack("extended_mag", 1), color=(116, 204, 255)),
     **_armor_items(),
 }
@@ -101,6 +103,8 @@ RECIPES: dict[str, Recipe] = {
     "mine_heavy": Recipe("mine_heavy", "Heavy Mine", {"scrap": 8, "gunpowder": 8, "circuit": 2, "duct_tape": 2}, ("mine_heavy", 1)),
     "laser_module": Recipe("laser_module", "Laser Sight", {"circuit": 1, "scrap": 2, "duct_tape": 1}, ("laser_module", 1)),
     "flashlight_module": Recipe("flashlight_module", "Flashlight", {"circuit": 1, "scrap": 2, "cloth": 1}, ("flashlight_module", 1)),
+    "silencer": Recipe("silencer", "Silencer", {"scrap": 3, "duct_tape": 2, "circuit": 1}, ("silencer", 1)),
+    "compensator": Recipe("compensator", "Compensator", {"scrap": 4, "gunpowder": 2, "circuit": 1}, ("compensator", 1)),
     "extended_mag": Recipe("extended_mag", "Extended Magazine", {"scrap": 4, "duct_tape": 1}, ("extended_mag", 1)),
 }
 
@@ -137,11 +141,27 @@ HOUSE_LOOT = [
     ("mine_standard", 1, 1),
     ("laser_module", 1, 1),
     ("flashlight_module", 1, 1),
+    ("silencer", 1, 1),
+    ("compensator", 1, 1),
     ("extended_mag", 1, 1),
     ("light_head", 1, 1),
     ("light_torso", 1, 1),
     ("light_arms", 1, 1),
     ("light_legs", 1, 1),
+]
+
+BASEMENT_LOOT = [
+    ("repair_kit", 1, 4),
+    ("circuit", 1, 4),
+    ("gunpowder", 1, 4),
+    ("heavy_grenade", 1, 3),
+    ("mine_standard", 1, 3),
+    ("mine_heavy", 1, 2),
+    ("laser_module", 1, 2),
+    ("flashlight_module", 1, 2),
+    ("silencer", 1, 2),
+    ("compensator", 1, 2),
+    ("extended_mag", 1, 2),
 ]
 
 WORLD_LOOT = [
@@ -157,6 +177,8 @@ WORLD_LOOT = [
     ("mine_standard", 1, 1),
     ("mine_heavy", 1, 1),
     ("flashlight_module", 1, 1),
+    ("silencer", 1, 1),
+    ("compensator", 1, 1),
     ("extended_mag", 1, 1),
     ("light_head", 1, 1),
     ("light_torso", 1, 1),
