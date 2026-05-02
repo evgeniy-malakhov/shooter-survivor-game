@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import heapq
 import math
 import random
 from dataclasses import dataclass
@@ -58,6 +59,157 @@ def _line_blocked_env(
 def _blocked_at_env(env: ZombieProcessEnv, pos: Vec2, radius: float, floor: int) -> bool:
     walls = env.walls_by_floor.get(floor, ())
     return walls_blocked_at(pos, radius, walls)
+
+def _grid_node(pos: Vec2, cell_size: int) -> tuple[int, int]:
+    return int(pos.x // cell_size), int(pos.y // cell_size)
+
+
+def _grid_center(node: tuple[int, int], cell_size: int) -> Vec2:
+    return Vec2(
+        node[0] * cell_size + cell_size * 0.5,
+        node[1] * cell_size + cell_size * 0.5,
+    )
+
+
+def _path_point_blocked_env(
+    env: ZombieProcessEnv,
+    point: Vec2,
+    radius: float,
+    floor: int,
+) -> bool:
+    walls = env.walls_by_floor.get(floor, ())
+    return walls_blocked_at(point, radius, walls)
+
+
+def _path_next_point_env(
+    env: ZombieProcessEnv,
+    zombie: ZombieState,
+    target: Vec2,
+    *,
+    cell_size: int = 96,
+    max_expansions: int = 900,
+) -> Vec2:
+    # Если цель доступна напрямую — pathfinding не нужен.
+    if not _line_blocked_env(env, zombie.pos, target, zombie.floor, sound=False):
+        return target
+
+    spec = ZOMBIES[zombie.kind]
+    start = _grid_node(zombie.pos, cell_size)
+    goal = _grid_node(target, cell_size)
+
+    open_heap: list[tuple[float, int, tuple[int, int]]] = []
+    heapq.heappush(open_heap, (0.0, 0, start))
+
+    came_from: dict[tuple[int, int], tuple[int, int]] = {}
+    g_score: dict[tuple[int, int], float] = {start: 0.0}
+    visited: set[tuple[int, int]] = set()
+
+    counter = 0
+    expansions = 0
+
+    neighbors = (
+        (1, 0, 1.0),
+        (-1, 0, 1.0),
+        (0, 1, 1.0),
+        (0, -1, 1.0),
+        (1, 1, 1.414),
+        (-1, -1, 1.414),
+        (1, -1, 1.414),
+        (-1, 1, 1.414),
+    )
+
+    while open_heap and expansions < max_expansions:
+        _, _, current = heapq.heappop(open_heap)
+
+        if current in visited:
+            continue
+
+        visited.add(current)
+        expansions += 1
+
+        if current == goal:
+            return _first_path_step(came_from, current, start, cell_size)
+
+        for dx, dy, cost in neighbors:
+            nxt = (current[0] + dx, current[1] + dy)
+
+            if nxt in visited:
+                continue
+
+            point = _grid_center(nxt, cell_size)
+
+            if point.x < 0 or point.y < 0 or point.x > env.map_width or point.y > env.map_height:
+                continue
+
+            if _path_point_blocked_env(env, point, spec.radius + 6.0, zombie.floor):
+                continue
+
+            new_g = g_score[current] + cost
+
+            if new_g >= g_score.get(nxt, float("inf")):
+                continue
+
+            came_from[nxt] = current
+            g_score[nxt] = new_g
+
+            heuristic = math.hypot(goal[0] - nxt[0], goal[1] - nxt[1])
+            counter += 1
+            heapq.heappush(open_heap, (new_g + heuristic, counter, nxt))
+
+    # Если путь не найден — лучше не бежать прямо в стену.
+    return _fallback_avoidance_point_env(env, zombie, target)
+
+
+def _first_path_step(
+    came_from: dict[tuple[int, int], tuple[int, int]],
+    current: tuple[int, int],
+    start: tuple[int, int],
+    cell_size: int,
+) -> Vec2:
+    path = [current]
+
+    while current in came_from:
+        current = came_from[current]
+        path.append(current)
+
+    path.reverse()
+
+    if len(path) <= 1:
+        return _grid_center(start, cell_size)
+
+    # Берём не самый первый соседний шаг, а чуть дальше — движение будет плавнее.
+    next_node = path[min(2, len(path) - 1)]
+    return _grid_center(next_node, cell_size)
+
+
+def _fallback_avoidance_point_env(
+    env: ZombieProcessEnv,
+    zombie: ZombieState,
+    target: Vec2,
+) -> Vec2:
+    spec = ZOMBIES[zombie.kind]
+
+    desired = zombie.pos.angle_to(target)
+
+    for offset in (
+        math.pi * 0.5,
+        -math.pi * 0.5,
+        math.pi * 0.25,
+        -math.pi * 0.25,
+        math.pi * 0.75,
+        -math.pi * 0.75,
+    ):
+        angle = desired + offset
+        candidate = Vec2(
+            zombie.pos.x + math.cos(angle) * 180.0,
+            zombie.pos.y + math.sin(angle) * 180.0,
+        )
+        candidate.clamp_to_map(env.map_width, env.map_height)
+
+        if not _path_point_blocked_env(env, candidate, spec.radius + 6.0, zombie.floor):
+            return candidate
+
+    return zombie.pos.copy()
 
 
 def _move_circle_env(env: ZombieProcessEnv, pos: Vec2, delta: Vec2, radius: float, floor: int) -> None:
@@ -282,6 +434,9 @@ def _make_zombie_context(
     def entry_target(bid: str) -> Vec2 | None:
         return _building_entry_target_env(env, bid)
 
+    def path_next_point(zombie: ZombieState, target: Vec2) -> Vec2 | None:
+        return _path_next_point_env(env, zombie, target)
+
     return ZombieContext(
         zombie=zombie,
         players=living_players,
@@ -296,6 +451,7 @@ def _make_zombie_context(
         random_patrol_pos=random_patrol,
         pick_search_waypoint=pick_wp,
         building_entry_target=entry_target,
+        path_next_point=path_next_point
     )
 
 

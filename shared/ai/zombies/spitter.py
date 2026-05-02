@@ -1,7 +1,7 @@
-from shared.ai.zombies.walker import WalkerZombieAI
+from shared.ai.zombies.base_zombie import BaseZombieAI
 
 
-class SpitterZombieAI(WalkerZombieAI):
+class SpitterZombieAI(BaseZombieAI):
     kind = "spitter"
 
     def update(self, ctx):

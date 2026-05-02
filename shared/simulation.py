@@ -9,6 +9,7 @@ from concurrent.futures import Future, ProcessPoolExecutor
 from dataclasses import dataclass, fields, replace
 from typing import Any, Deque
 
+from shared.ai.pathfinding import GridPathfinder
 from shared.ai.registry import ZOMBIE_AI_REGISTRY
 from shared.spawning.zombie_factory import ZombieFactory
 from shared.spawning.zombie_spawn_table import DEFAULT_ZOMBIE_SPAWN_TABLE
@@ -341,6 +342,8 @@ class GameWorld:
         self._zombie_ai_active_radius = max(240.0, float(zombie_ai_active_radius))
         self._zombie_ai_far_radius = max(self._zombie_ai_active_radius, float(zombie_ai_far_radius))
         self._zombie_ai_batch_size = max(1, int(zombie_ai_batch_size))
+        self.zombie_pathfinder = GridPathfinder(cell_size=96)
+        self._zombie_path_cache: dict[str, tuple[Vec2, list[Vec2]]] = {}
 
         self.zombie_ai_registry = ZOMBIE_AI_REGISTRY
         self.zombie_factory = ZombieFactory()
@@ -473,6 +476,38 @@ class GameWorld:
                 "time": round(self.time, 3),
             }
         )
+
+    def _zombie_path_next_point(self, zombie: ZombieState, target: Vec2) -> Vec2:
+        # если цель видна по прямой — pathfinding не нужен
+        if not self._line_blocked(zombie.pos, target, zombie.floor):
+            self._zombie_path_cache.pop(zombie.id, None)
+            return target
+
+        cached = self._zombie_path_cache.get(zombie.id)
+
+        if cached:
+            cached_target, path = cached
+            if cached_target.distance_to(target) < 96 and path:
+                while path and zombie.pos.distance_to(path[0]) < 48:
+                    path.pop(0)
+
+                if path:
+                    return path[0]
+
+        path = self.zombie_pathfinder.find_path(
+            start=zombie.pos,
+            goal=target,
+            walls=self._closed_walls(zombie.floor),
+            map_width=MAP_WIDTH,
+            map_height=MAP_HEIGHT,
+        )
+
+        if not path:
+            return target
+
+        self._zombie_path_cache[zombie.id] = (target.copy(), path)
+
+        return path[0]
 
     def _apply_client_command_unlocked(self, player: PlayerState, command: ClientCommand) -> tuple[bool, str]:
         kind = command.kind
@@ -657,6 +692,8 @@ class GameWorld:
                     floor=player.floor,
                     radius=player.noise,
                     source_player_id=player.id,
+                    kind="movement",
+                    intensity=0.45 if player.sprinting else 0.25,
                 )
 
             for weapon in player.weapons.values():
@@ -688,6 +725,8 @@ class GameWorld:
             floor: int,
             radius: float,
             source_player_id: str | None = None,
+            kind: str = "generic",
+            intensity: float = 1.0,
     ) -> None:
         self.sound_events.append(
             SoundEvent(
@@ -696,6 +735,8 @@ class GameWorld:
                 radius=max(0.0, radius),
                 timer=0.75,
                 source_player_id=source_player_id,
+                kind=kind,
+                intensity=intensity,
             )
         )
 
@@ -705,16 +746,9 @@ class GameWorld:
         move_noise = 0.0
         if movement.length() > 0:
             move_noise = SPRINT_NOISE if player.sprinting else WALK_NOISE
-        shot_noise = 0.0
-        if shooting:
-            weapon = player.active_weapon()
-            if weapon:
-                utility_key = weapon.modules.get("utility") or ""
-                utility = WEAPON_MODULES.get(utility_key)
-                multiplier = utility.noise_multiplier if utility else 1.0
-                shot_noise = SHOT_NOISE * multiplier
+
         melee_noise = UNARMED_MELEE_NOISE if meleeing else 0.0
-        return max(move_noise, melee_noise, shot_noise)
+        return max(move_noise, melee_noise)
 
     def _update_projectiles(self, dt: float) -> None:
         dead_projectiles: list[str] = []
@@ -2047,7 +2081,21 @@ class GameWorld:
             return
 
         weapon.ammo_in_mag -= 1
-        # Звук выстрела уже эмитится в _update_players через player.noise / _emit_sound
+
+        if not player.inside_building:
+            utility_key = weapon.modules.get("utility") or ""
+            utility = WEAPON_MODULES.get(utility_key)
+            multiplier = utility.noise_multiplier if utility else 1.0
+
+            self._emit_sound(
+                pos=player.pos,
+                floor=player.floor,
+                radius=SHOT_NOISE * multiplier * 1.8,
+                source_player_id=player.id,
+                kind="shot",
+                intensity=1.0 * multiplier,
+            )
+
         rarity = rarity_spec(weapon.rarity)
         wear = self.rng.uniform(0.08, 0.22) * self.difficulty.weapon_wear_multiplier / rarity.weapon_durability_multiplier
         weapon.durability = max(0.0, weapon.durability - wear)
@@ -2149,6 +2197,14 @@ class GameWorld:
 
     def _detonate_grenade(self, grenade: GrenadeState) -> None:
         spec = GRENADE_SPECS.get(grenade.kind, DEFAULT_GRENADE)
+        self._emit_sound(
+            pos=grenade.pos,
+            floor=grenade.floor,
+            radius=1800.0,
+            source_player_id=grenade.owner_id,
+            kind="explosion",
+            intensity=1.4,
+        )
         self._explode_at(
             grenade.pos,
             grenade.floor,
@@ -2193,6 +2249,14 @@ class GameWorld:
 
     def _detonate_mine(self, mine: MineState) -> None:
         spec = MINE_SPECS.get(mine.kind, DEFAULT_MINE)
+        self._emit_sound(
+            pos=mine.pos,
+            floor=mine.floor,
+            radius=1500.0,
+            source_player_id=mine.owner_id,
+            kind="explosion",
+            intensity=1.25,
+        )
         self._explode_at(
             mine.pos,
             mine.floor,
@@ -2392,6 +2456,7 @@ class GameWorld:
             random_patrol_pos=self._random_patrol_pos,
             pick_search_waypoint=self._pick_search_waypoint,
             building_entry_target=self._building_entry_target,
+            path_next_point=self._zombie_path_next_point,
         )
 
     def _zombie_line_blocked_for_vision(self, start: Vec2, end: Vec2, floor: int) -> bool:

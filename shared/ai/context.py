@@ -14,6 +14,8 @@ class SoundEvent:
     radius: float
     timer: float
     source_player_id: str | None = None
+    kind: str = "generic"
+    intensity: float = 1.0
 
 @dataclass(slots=True)
 class ZombieActionResult:
@@ -37,3 +39,4 @@ class ZombieContext:
     random_patrol_pos: Callable[[random.Random], Vec2]
     pick_search_waypoint: Callable[[ZombieState, Vec2, random.Random], Vec2 | None]
     building_entry_target: Callable[[str], Vec2 | None]
+    path_next_point: Callable[[ZombieState, Vec2], Vec2]
