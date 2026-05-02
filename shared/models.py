@@ -436,6 +436,8 @@ class ZombieState:
     last_known_pos: Vec2 | None = None
     waypoint: Vec2 | None = None
     search_timer: float = 0.0
+    search_look_timer: float = 0.0
+    search_gaze_anchor: float = 0.0
     alertness: float = 0.0
     idle_timer: float = 0.0
     special_cooldown: float = 0.0
@@ -459,6 +461,8 @@ class ZombieState:
             "last_known_pos": self.last_known_pos.to_dict() if self.last_known_pos else None,
             "waypoint": self.waypoint.to_dict() if self.waypoint else None,
             "search_timer": round(self.search_timer, 3),
+            "search_look_timer": round(self.search_look_timer, 3),
+            "search_gaze_anchor": round(self.search_gaze_anchor, 4),
             "alertness": round(self.alertness, 3),
             "idle_timer": round(self.idle_timer, 3),
             "special_cooldown": round(self.special_cooldown, 3),
@@ -484,6 +488,8 @@ class ZombieState:
             last_known_pos=Vec2.from_dict(data["last_known_pos"]) if data.get("last_known_pos") else None,
             waypoint=Vec2.from_dict(data["waypoint"]) if data.get("waypoint") else None,
             search_timer=float(data.get("search_timer", 0.0)),
+            search_look_timer=float(data.get("search_look_timer", 0.0)),
+            search_gaze_anchor=float(data.get("search_gaze_anchor", 0.0)),
             alertness=float(data.get("alertness", 0.0)),
             idle_timer=float(data.get("idle_timer", 0.0)),
             special_cooldown=float(data.get("special_cooldown", 0.0)),

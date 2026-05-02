@@ -1287,6 +1287,7 @@ class GameApp:
             initial_zombies=initial_zombies,
             max_zombies=max_zombies,
             difficulty_key=self.difficulty_key,
+            zombie_workers=None,
         )
         player = self.world.add_player(self.player_name, "local")
         self.local_player_id = player.id
