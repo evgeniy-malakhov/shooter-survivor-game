@@ -1,0 +1,24 @@
+from __future__ import annotations
+
+from concurrent.futures import ThreadPoolExecutor
+
+
+class ThreadPoolService:
+    def __init__(self, workers: int) -> None:
+        self._executor: ThreadPoolExecutor | None = None
+
+        if workers > 0:
+            self._executor = ThreadPoolExecutor(max_workers=workers)
+
+    @property
+    def enabled(self) -> bool:
+        return self._executor is not None
+
+    @property
+    def executor(self) -> ThreadPoolExecutor | None:
+        return self._executor
+
+    def close(self) -> None:
+        if self._executor:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+            self._executor = None

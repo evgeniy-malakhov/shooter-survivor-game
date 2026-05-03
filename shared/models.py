@@ -221,6 +221,7 @@ class WeaponSpec:
     projectile_speed: float
     spread: float
     pellets: int = 1
+    projectile_radius: float = 4.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,6 +247,25 @@ class ZombieSpec:
     fov_degrees: float
     sensitivity: float
     suspicion_time: float
+
+@dataclass(frozen=True, slots=True)
+class SoldierSpec:
+    health: int
+    armor: int
+    speed: float
+    radius: float
+    sight_range: float
+    hearing_range: float
+    fov_degrees: float
+    damage: int
+    fire_range: float
+    magazine_size: int
+    fire_cooldown: float
+    accuracy: float
+    loot_table: tuple[str, ...]
+    weapon_key: str
+    reload_time: float
+    projectile_speed: float
 
 
 @dataclass(slots=True)
@@ -420,6 +440,74 @@ class PlayerState:
             for slot, weapon in data.get("weapons", {}).items()
         }
         return player
+
+@dataclass(slots=True)
+class SoldierState:
+    id: str
+    kind: str
+    pos: Vec2
+    health: int
+    armor: int
+    weapon: WeaponRuntime
+    floor: int = 0
+    facing: float = 0.0
+    alive: bool = True
+    sprinting: bool = False
+
+    mode: str = "guard"
+    guard_point: Vec2 | None = None
+    waypoint: Vec2 | None = None
+
+    target_id: str | None = None
+    target_kind: str | None = None
+    last_known_pos: Vec2 | None = None
+
+    attack_cooldown: float = 0.0
+    idle_timer: float = 0.0
+    alertness: float = 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "kind": self.kind,
+            "pos": self.pos.to_dict(),
+            "health": self.health,
+            "armor": self.armor,
+            "weapon": self.weapon.to_dict(),
+            "floor": self.floor,
+            "facing": round(self.facing, 4),
+            "alive": self.alive,
+            "sprinting": self.sprinting,
+            "mode": self.mode,
+            "guard_point": self.guard_point.to_dict() if self.guard_point else None,
+            "waypoint": self.waypoint.to_dict() if self.waypoint else None,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SoldierState":
+        return cls(
+            id=str(data["id"]),
+            kind=str(data.get("kind", "rifleman")),
+            pos=Vec2.from_dict(data.get("pos", {})),
+            health=int(data.get("health", 1)),
+            armor=int(data.get("armor", 0)),
+            weapon=WeaponRuntime.from_dict(data.get(
+                "weapon",
+                {
+                    "key": "rifle",
+                    "ammo_in_mag": 30,
+                    "reserve_ammo": 90,
+                    "reload_left": 0.0,
+                }
+            )),
+            floor=int(data.get("floor", 0)),
+            facing=float(data.get("facing", 0.0)),
+            alive=bool(data.get("alive", True)),
+            sprinting=bool(data.get("sprinting", False)),
+            mode=str(data.get("mode", "guard")),
+            guard_point=Vec2.from_dict(data["guard_point"]) if data.get("guard_point") else None,
+            waypoint=Vec2.from_dict(data["waypoint"]) if data.get("waypoint") else None,
+        )
 
 
 @dataclass(slots=True)
@@ -828,6 +916,7 @@ class WorldSnapshot:
     zombies: dict[str, ZombieState]
     projectiles: dict[str, ProjectileState]
     loot: dict[str, LootState]
+    soldiers: dict[str, SoldierState] = field(default_factory=dict)
     grenades: dict[str, GrenadeState] = field(default_factory=dict)
     mines: dict[str, MineState] = field(default_factory=dict)
     poison_projectiles: dict[str, PoisonProjectileState] = field(default_factory=dict)
@@ -841,6 +930,7 @@ class WorldSnapshot:
             "map_height": self.map_height,
             "players": {key: value.to_dict() for key, value in self.players.items()},
             "zombies": {key: value.to_dict() for key, value in self.zombies.items()},
+            "soldiers": {key: value.to_dict() for key, value in self.soldiers.items()},
             "projectiles": {key: value.to_dict() for key, value in self.projectiles.items()},
             "grenades": {key: value.to_dict() for key, value in self.grenades.items()},
             "mines": {key: value.to_dict() for key, value in self.mines.items()},
@@ -858,6 +948,10 @@ class WorldSnapshot:
             map_height=int(data.get("map_height", 1)),
             players={key: PlayerState.from_dict(value) for key, value in data.get("players", {}).items()},
             zombies={key: ZombieState.from_dict(value) for key, value in data.get("zombies", {}).items()},
+            soldiers={
+                key: SoldierState.from_dict(value)
+                for key, value in data.get("soldiers", {}).items()
+            },
             projectiles={key: ProjectileState.from_dict(value) for key, value in data.get("projectiles", {}).items()},
             grenades={key: GrenadeState.from_dict(value) for key, value in data.get("grenades", {}).items()},
             mines={key: MineState.from_dict(value) for key, value in data.get("mines", {}).items()},

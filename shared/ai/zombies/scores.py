@@ -137,7 +137,7 @@ class LeaperDecisionScorer(DecisionScorer):
                 90.0 - abs(distance - self.tuning.spit_best_distance) / 3.5,
             )
 
-            if target.sprinting:
+            if getattr(target, "sprinting", False):
                 score += 18.0
 
             if target.health <= 45:

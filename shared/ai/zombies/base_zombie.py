@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 
-from shared.ai.context import ZombieActionResult, ZombieContext, SoundEvent
+from shared.ai.context import ZombieActionResult, ZombieContext, SoundEvent, ActorTarget
 from shared.ai.decisions import DecisionScorer, ZombieDecision, ZombieDecisionKind
 from shared.constants import SEARCH_DURATION, ZOMBIE_TARGET_RADIUS, ZOMBIES
 from shared.models import PlayerState, Vec2
@@ -86,7 +86,7 @@ class BaseZombieAI:
     def _heard_sound(self, ctx: ZombieContext) -> SoundEvent | None:
         return ctx.can_hear(ctx.zombie)
 
-    def _enter_chase(self, ctx: ZombieContext, target: PlayerState) -> None:
+    def _enter_chase(self, ctx: ZombieContext, target: ActorTarget) -> None:
         zombie = ctx.zombie
         zombie.mode = "chase"
         zombie.target_player_id = target.id
@@ -178,7 +178,7 @@ class BaseZombieAI:
     def _update_chase(
         self,
         ctx: ZombieContext,
-        target: PlayerState,
+        target: ActorTarget,
         result: ZombieActionResult,
     ) -> None:
         zombie = ctx.zombie
@@ -193,7 +193,7 @@ class BaseZombieAI:
     def _update_special(
             self,
             ctx: ZombieContext,
-            target: PlayerState,
+            target: ActorTarget,
             result: ZombieActionResult,
     ) -> None:
         self._try_special(ctx, target, result)
@@ -292,7 +292,7 @@ class BaseZombieAI:
         zombie.search_gaze_anchor = 0.0
         zombie.alertness = 0.0
 
-    def _resolve_destination(self, ctx: ZombieContext, target: PlayerState) -> Vec2:
+    def _resolve_destination(self, ctx: ZombieContext, target: ActorTarget) -> Vec2:
         if target.inside_building:
             entry = ctx.building_entry_target(target.inside_building)
             if entry:
@@ -316,7 +316,7 @@ class BaseZombieAI:
     def _try_special(
         self,
         ctx: ZombieContext,
-        target: PlayerState,
+        target: ActorTarget,
         result: ZombieActionResult,
     ) -> None:
         return
@@ -324,7 +324,7 @@ class BaseZombieAI:
     def _try_attack(
         self,
         ctx: ZombieContext,
-        target: PlayerState,
+        target: ActorTarget,
         result: ZombieActionResult,
     ) -> None:
         zombie = ctx.zombie
@@ -340,5 +340,8 @@ class BaseZombieAI:
             return
 
         damage = max(1, int(round(spec.damage * ctx.difficulty.zombie_damage_multiplier)))
-        result.player_hits.append((target.id, damage))
+        if target.kind == "player":
+            result.player_hits.append((target.id, damage))
+        elif target.kind == "soldier":
+            result.soldier_hits.append((target.id, damage))
         zombie.attack_cooldown = 0.85

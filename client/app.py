@@ -22,7 +22,7 @@ from client.settings_schema import (
     tab_toggle_keys,
 )
 from client.single_setup_schema import DENSITY_ORDER, MAP_OPTIONS
-from shared.constants import ARMORS, MAP_HEIGHT, MAP_WIDTH, SLOTS, WEAPONS, ZOMBIES
+from shared.constants import ARMORS, MAP_HEIGHT, MAP_WIDTH, SLOTS, WEAPONS, ZOMBIES, SOLDIERS
 from shared.crafting import craft_rarity_chances
 from shared.difficulty import DIFFICULTY_KEYS, load_difficulty
 from shared.explosives import GRENADE_SPECS, MINE_SPECS, DEFAULT_GRENADE, DEFAULT_MINE
@@ -1287,7 +1287,7 @@ class GameApp:
             initial_zombies=initial_zombies,
             max_zombies=max_zombies,
             difficulty_key=self.difficulty_key,
-            zombie_workers=None,
+            zombie_workers=0,
         )
         player = self.world.add_player(self.player_name, "local")
         self.local_player_id = player.id
@@ -1628,6 +1628,7 @@ class GameApp:
             self._draw_death_blood_effects(camera, player)
             self._draw_zombies(snapshot, camera)
             self._draw_players(snapshot, camera)
+            self._draw_soldiers(snapshot, camera)
             self._draw_death_body_effects(camera, player)
             self._draw_weapon_utilities(snapshot, camera, player)
             self._draw_explosion_effects(camera, player)
@@ -2023,6 +2024,78 @@ class GameApp:
                 if self.settings["ai_reactions"]:
                     mode_color = RED if zombie.mode == "chase" else YELLOW if zombie.mode in {"investigate", "search"} else MUTED
                     self._draw_text(zombie.mode, sx - 22, sy + radius + 8, mode_color, self.small)
+
+    def _draw_soldiers(self, snapshot: WorldSnapshot, camera: Vec2) -> None:
+        player = self._local_player(snapshot)
+
+        for soldier in snapshot.soldiers.values():
+            if player and soldier.floor != player.floor:
+                continue
+
+            spec = SOLDIERS.get(soldier.kind)
+            if not spec:
+                continue
+
+            sx, sy = self._world_to_screen(soldier.pos, camera)
+
+            if not (-80 <= sx <= SCREEN_W + 80 and -80 <= sy <= SCREEN_H + 80):
+                continue
+
+            radius = self._world_size(spec.radius, 9)
+            facing = soldier.facing
+
+            # Пятиугольник, направленный вперёд.
+            points = []
+            for i in range(5):
+                angle = facing - math.pi / 2 + math.tau * i / 5
+                scale = 1.25 if i == 0 else 1.0
+                points.append((
+                    int(sx + math.cos(angle) * radius * scale),
+                    int(sy + math.sin(angle) * radius * scale),
+                ))
+
+            shadow_points = [(x + 2, y + 2) for x, y in points]
+
+            pygame.draw.polygon(self.screen, (7, 12, 22), shadow_points)
+            pygame.draw.polygon(self.screen, (44, 124, 255), points)
+            pygame.draw.polygon(self.screen, (184, 220, 255), points, 2)
+
+            # Направление взгляда/оружия.
+            muzzle_len = self._world_size(spec.radius + 18, radius + 8)
+            muzzle = (
+                int(sx + math.cos(facing) * muzzle_len),
+                int(sy + math.sin(facing) * muzzle_len),
+            )
+            pygame.draw.line(self.screen, (210, 235, 255), (sx, sy), muzzle, 2)
+
+            if self.settings["health_bars"]:
+                self._bar(
+                    sx - 24,
+                    sy - radius - 15,
+                    48,
+                    5,
+                    soldier.health / max(1, spec.health),
+                    GREEN,
+                )
+
+            if self.settings["health_bars"] and soldier.armor > 0:
+                self._bar(
+                    sx - 24,
+                    sy - radius - 8,
+                    48,
+                    4,
+                    soldier.armor / max(1, spec.armor),
+                    CYAN,
+                )
+
+            if self.settings["ai_reactions"]:
+                self._draw_text(
+                    soldier.mode,
+                    sx - 24,
+                    sy + radius + 8,
+                    CYAN,
+                    self.small,
+                )
 
     def _draw_players(self, snapshot: WorldSnapshot, camera: Vec2) -> None:
         local = self._local_player(snapshot)
@@ -2605,6 +2678,15 @@ class GameApp:
             if not inside(zombie.pos):
                 continue
             pygame.draw.circle(self.screen, RED, mp(zombie.pos), 3)
+
+        for soldier in snapshot.soldiers.values():
+            if player and soldier.floor != player.floor:
+                continue
+            if not inside(soldier.pos):
+                continue
+            pygame.draw.circle(self.screen, (44, 124, 255), mp(soldier.pos), 4)
+            pygame.draw.circle(self.screen, (190, 225, 255), mp(soldier.pos), 4, 1)
+
         for other in snapshot.players.values():
             if player and other.floor != player.floor:
                 continue

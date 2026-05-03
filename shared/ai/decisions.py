@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import Enum
 
-from shared.ai.context import SoundEvent, ZombieContext
+from shared.ai.context import SoundEvent, ZombieContext, ActorTarget
 from shared.constants import ZOMBIE_TARGET_RADIUS, ZOMBIES
 from shared.models import PlayerState, Vec2
 
@@ -22,7 +23,7 @@ class ZombieDecisionKind(str, Enum):
 class ZombieDecision:
     kind: ZombieDecisionKind
     score: float
-    target: PlayerState | None = None
+    target: ActorTarget | None = None
     sound: SoundEvent | None = None
     pos: Vec2 | None = None
 
@@ -55,7 +56,8 @@ class DecisionScorer:
     def choose(self, ctx: ZombieContext) -> ZombieDecision:
         decisions: list[ZombieDecision] = []
 
-        visible = self._score_visible_targets(ctx)
+        visible = self._score_actor_targets(ctx)
+
         decisions.extend(visible)
 
         attack = self._score_attack(ctx, visible)
@@ -78,35 +80,54 @@ class DecisionScorer:
 
         return max(decisions, key=lambda decision: decision.score)
 
-    def _score_visible_targets(self, ctx: ZombieContext) -> list[ZombieDecision]:
+    def _score_actor_targets(self, ctx: ZombieContext) -> list[ZombieDecision]:
         result: list[ZombieDecision] = []
 
-        for player in ctx.players:
-            if player.floor != ctx.zombie.floor or not player.alive:
+        for target in ctx.targets:
+            if not target.alive:
                 continue
 
-            if not ctx.can_see(ctx.zombie, player):
+            if target.floor != ctx.zombie.floor:
                 continue
 
-            distance = ctx.zombie.pos.distance_to(player.pos)
+            if target.kind not in {"player", "soldier"}:
+                continue
+
+            if target.inside_building and ctx.zombie.inside_building != target.inside_building:
+                continue
+
+            distance = ctx.zombie.pos.distance_to(target.pos)
+
+            spec = ZOMBIES[ctx.zombie.kind]
+
+            if distance > spec.sight_range:
+                continue
+
+            angle_to_target = ctx.zombie.pos.angle_to(target.pos)
+            # если у тебя есть helper angle_delta — используй его
+            delta = (angle_to_target - ctx.zombie.facing + math.pi) % math.tau - math.pi
+
+            if abs(delta) > math.radians(spec.fov_degrees * 0.5):
+                continue
+
+            if ctx.line_blocked(ctx.zombie.pos, target.pos, ctx.zombie.floor):
+                continue
+
             score = self.weights.visible_target
             score += max(0.0, self.weights.distance_to_target - distance / 14.0)
 
-            if player.health <= 35:
+            if target.kind == "soldier":
+                score += 22.0
+
+            if target.health <= 35:
                 score += self.weights.wounded_target
-
-            if player.sprinting:
-                score += self.weights.sprinting_target
-
-            if player.sneaking:
-                score += self.weights.sneaking_target
 
             result.append(
                 ZombieDecision(
                     kind=ZombieDecisionKind.CHASE_VISIBLE_TARGET,
                     score=score,
-                    target=player,
-                    pos=player.pos.copy(),
+                    target=target,
+                    pos=target.pos.copy(),
                 )
             )
 
@@ -128,7 +149,8 @@ class DecisionScorer:
                 continue
 
             distance = zombie.pos.distance_to(target.pos)
-            attack_range = ZOMBIE_TARGET_RADIUS + spec.radius
+            target_radius = getattr(target, "radius", 0.0)
+            attack_range = ZOMBIE_TARGET_RADIUS + spec.radius + target_radius
 
             if distance > attack_range:
                 continue

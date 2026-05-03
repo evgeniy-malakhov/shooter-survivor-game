@@ -3,13 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from shared.models import ArmorSpec, WeaponSpec, ZombieSpec
-
+from shared.models import ArmorSpec, WeaponSpec, ZombieSpec, SoldierSpec
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "configs"
 
-MAP_WIDTH = 28800
-MAP_HEIGHT = 19800
+MAP_WIDTH = 28800 / 3 #28800
+MAP_HEIGHT = 19800 / 3 #19800
 TICK_RATE = 30
 SNAPSHOT_RATE = 20
 INITIAL_ZOMBIES = 8
@@ -140,6 +139,45 @@ DEFAULT_ZOMBIES = {
         "sensitivity": 1.05,
         "suspicion_time": 1.0,
     },
+}
+
+SOLDIERS = {
+    "rifleman": SoldierSpec(
+        health=120,
+        armor=45,
+        speed=155,
+        radius=18,
+        sight_range=850,
+        hearing_range=600,
+        fov_degrees=115,
+        damage=14,
+        fire_range=780,
+        magazine_size=30,
+        fire_cooldown=0.16,
+        accuracy=0.78,
+        loot_table=("rifle", "ammo_rifle", "medkit"),
+        projectile_speed=1180.0,
+        weapon_key="rifle",
+        reload_time=1.9,
+    ),
+    "heavy": SoldierSpec(
+        health=180,
+        armor=90,
+        speed=110,
+        radius=22,
+        sight_range=720,
+        hearing_range=500,
+        fov_degrees=100,
+        damage=22,
+        fire_range=650,
+        magazine_size=40,
+        fire_cooldown=0.28,
+        accuracy=0.68,
+        loot_table=("heavy_armor", "ammo_rifle"),
+        projectile_speed=1180.0,
+        weapon_key="rifle",
+        reload_time=1.9,
+    ),
 }
 
 
