@@ -5,13 +5,14 @@ from shared.models import PlayerState, PoisonPoolState, Vec2
 from shared.systems.base import WorldSystem
 from shared.world.world_context import WorldContext
 from shared.world.world_state import WorldState
+from shared.systems.events.game_events import ApplyPoisonEvent, PoisonTickDamageEvent
 
 
 class PoisonSystem(WorldSystem):
     def update(self, state: WorldState, ctx: WorldContext, dt: float) -> None:
         self._update_projectiles(state, ctx, dt)
-        self._update_pools(state, dt)
-        self._update_poisoned_players(state, dt)
+        self._update_pools(state, ctx, dt)
+        self._update_poisoned_players(state, ctx, dt)
 
     def _update_projectiles(self, state: WorldState, ctx: WorldContext, dt: float) -> None:
         expired: list[str] = []
@@ -30,7 +31,12 @@ class PoisonSystem(WorldSystem):
             hit_player = self._find_hit_player(state, spit.pos, spit.radius, spit.floor)
 
             if hit_player:
-                self.apply_poison(hit_player, damage_per_tick=3)
+                ctx.events.emit(
+                    ApplyPoisonEvent(
+                        player_id=hit_player.id,
+                        damage_per_tick=3,
+                    )
+                )
                 expired.append(spit.id)
             elif hit_wall or reached_target or spit.life <= 0.0:
                 pool_pos = spit.target if reached_target else spit.pos
@@ -40,7 +46,7 @@ class PoisonSystem(WorldSystem):
         for spit_id in expired:
             state.poison_projectiles.pop(spit_id, None)
 
-    def _update_pools(self, state: WorldState, dt: float) -> None:
+    def _update_pools(self, state: WorldState, ctx: WorldContext, dt: float) -> None:
         expired: list[str] = []
 
         for pool in list(state.poison_pools.values()):
@@ -56,12 +62,17 @@ class PoisonSystem(WorldSystem):
                     and player.floor == pool.floor
                     and player.pos.distance_to(pool.pos) <= pool.radius + PLAYER_RADIUS * 0.35
                 ):
-                    self.apply_poison(player, damage_per_tick=2)
+                    ctx.events.emit(
+                        ApplyPoisonEvent(
+                            player_id=player.id,
+                            damage_per_tick=2,
+                        )
+                    )
 
         for pool_id in expired:
             state.poison_pools.pop(pool_id, None)
 
-    def _update_poisoned_players(self, state: WorldState, dt: float) -> None:
+    def _update_poisoned_players(self, state: WorldState, ctx: WorldContext, dt: float) -> None:
         for player in state.players.values():
             if player.poison_left <= 0.0 or not player.alive:
                 player.poison_left = 0.0
@@ -74,28 +85,12 @@ class PoisonSystem(WorldSystem):
 
             if player.poison_tick <= 0.0:
                 player.poison_tick = 1.0
-                self._apply_poison_damage(player, max(1, player.poison_damage))
-
-    def apply_poison(self, player: PlayerState, damage_per_tick: int) -> None:
-        if player.poison_left <= 0.0:
-            player.poison_tick = 1.0
-
-        player.poison_left = max(player.poison_left, 5.0)
-
-        if player.poison_tick <= 0.0:
-            player.poison_tick = 1.0
-
-        player.poison_damage = max(player.poison_damage, damage_per_tick)
-
-    def _apply_poison_damage(self, player: PlayerState, damage: int) -> None:
-        player.healing_left = 0.0
-        player.healing_pool = 0.0
-        player.healing_rate = 0.0
-        player.health -= damage
-
-        if player.health <= 0:
-            player.health = 0
-            player.alive = False
+                ctx.events.emit(
+                    PoisonTickDamageEvent(
+                        player_id=player.id,
+                        damage=max(1, player.poison_damage),
+                    )
+                )
 
     def _spawn_pool(
         self,

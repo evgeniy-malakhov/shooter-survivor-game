@@ -3,11 +3,13 @@ from __future__ import annotations
 import random
 from typing import Any
 
-from shared.constants import ARMORS, INTERACT_RADIUS, PICKUP_RADIUS, SLOTS, WEAPONS
+from shared.items import ITEMS, RECIPES, LEGACY_LOOT_TO_ITEM
+from shared.constants import ARMORS, INTERACT_RADIUS, PICKUP_RADIUS, SLOTS, WEAPONS, AMMO_BY_WEAPON
+
 from shared.crafting import roll_crafted_rarity
-from shared.items import ITEMS, RECIPES
 from shared.models import InventoryItem, LootState, PlayerState, WeaponRuntime
 from shared.rarities import rarity_spec
+from shared.systems.events.game_events import SpawnLootEvent
 from shared.world.world_state import WorldState
 
 
@@ -21,6 +23,7 @@ class InventoryService:
         loot,
         buildings,
         ids,
+        events,
     ) -> None:
         self._state = state
         self._rng = rng
@@ -28,6 +31,7 @@ class InventoryService:
         self._loot = loot
         self._buildings = buildings
         self._ids = ids
+        self._events = events
 
     def nearest_loot(self, player: PlayerState) -> LootState | None:
         best: LootState | None = None
@@ -53,7 +57,9 @@ class InventoryService:
 
         if loot.kind == "weapon":
             weapon_spec = WEAPONS.get(loot.payload)
+
             if not weapon_spec:
+                self.set_notice(player, "unknown_weapon")
                 return False
 
             player.weapons[weapon_spec.slot] = WeaponRuntime(
@@ -63,20 +69,19 @@ class InventoryService:
                 rarity=loot.rarity,
             )
 
-        elif loot.kind == "ammo":
-            weapon = player.weapons.get(loot.payload)
-            if weapon:
-                weapon.reserve_ammo += loot.amount
+        elif loot.kind in {"ammo", "armor", "item", "medkit"}:
+            item_key = self.resolve_loot_item_key(loot)
 
-        elif loot.kind == "medkit":
-            player.medkits += loot.amount
+            if item_key not in ITEMS:
+                self.set_notice(player, "unknown_item")
+                return False
 
-        elif loot.kind in {"armor", "item"}:
-            if not self.add_item(player, loot.payload, loot.amount, rarity=loot.rarity):
+            if not self.add_item(player, item_key, loot.amount, rarity=loot.rarity):
                 self.set_notice(player, "inventory_full")
                 return False
 
         else:
+            self.set_notice(player, "unknown_loot")
             return False
 
         self._state.loot.pop(loot.id, None)
@@ -114,6 +119,60 @@ class InventoryService:
             self.unequip_module(player, action)
         elif action_type == "drop":
             self.drop_item(player, action)
+        elif action_type in {"use", "use_item"}:
+            self.use_inventory_item(player, action)
+
+    def use_inventory_item(self, player: PlayerState, action: dict[str, Any]) -> bool:
+        source = str(action.get("src", action.get("source", "backpack")))
+        index = int(action.get("src_index", action.get("index", -1)))
+        slot = str(action.get("src_slot", action.get("slot", "")))
+
+        item: InventoryItem | None = None
+
+        if source == "backpack":
+            if not (0 <= index < len(player.backpack)):
+                return False
+            item = player.backpack[index]
+
+        elif source == "quick_item":
+            if slot not in SLOTS:
+                return False
+            item = player.quick_items.get(slot)
+
+        if not item:
+            return False
+
+        spec = ITEMS.get(item.key)
+
+        if not spec:
+            return False
+
+        if spec.kind in {"food", "medical"}:
+            if not self.use_item(player, item):
+                return False
+
+            item.amount -= 1
+
+            if item.amount <= 0:
+                if source == "backpack":
+                    player.backpack[index] = None
+                elif source == "quick_item":
+                    player.quick_items[slot] = None
+
+            return True
+
+        if spec.kind == "ammo":
+            if not self.use_item(player, item):
+                return False
+
+            if source == "backpack":
+                player.backpack[index] = None
+            elif source == "quick_item":
+                player.quick_items[slot] = None
+
+            return True
+
+        return False
 
     def move_inventory_item(self, player: PlayerState, action: dict[str, Any]) -> None:
         src = str(action.get("src", action.get("source", "backpack")))
@@ -209,23 +268,24 @@ class InventoryService:
         if not item:
             return
 
-        self._loot.spawn_loot(
-            loot_id=self._ids.next("l"),
-            pos=player.pos.copy(),
-            kind="item",
-            payload=item.key,
-            amount=item.amount,
-            floor=player.floor,
-            rarity=item.rarity,
+        self._events.emit(
+            SpawnLootEvent(
+                pos=player.pos.copy(),
+                kind="item",
+                payload=item.key,
+                amount=item.amount,
+                floor=player.floor,
+                rarity=item.rarity,
+            )
         )
 
     def take_item(
-            self,
-            player: PlayerState,
-            source: str,
-            index: int,
-            slot: str,
-            module_slot: str = "",
+        self,
+        player: PlayerState,
+        source: str,
+        index: int,
+        slot: str,
+        module_slot: str = "",
     ) -> InventoryItem | None:
         if source == "backpack" and 0 <= index < len(player.backpack):
             item = player.backpack[index]
@@ -292,13 +352,13 @@ class InventoryService:
         return None
 
     def place_item(
-            self,
-            player: PlayerState,
-            destination: str,
-            index: int,
-            slot: str,
-            item: InventoryItem,
-            module_slot: str = "",
+        self,
+        player: PlayerState,
+        destination: str,
+        index: int,
+        slot: str,
+        item: InventoryItem,
+        module_slot: str = "",
     ) -> InventoryItem | None:
         if destination == "backpack" and 0 <= index < len(player.backpack):
             displaced = player.backpack[index]
@@ -563,7 +623,6 @@ class InventoryService:
                 continue
 
             add = min(remaining, spec.stack_size)
-            print(f"adding {add} {key} to slot {index}")
 
             player.backpack[index] = self._new_item(
                 key,
@@ -651,3 +710,24 @@ class InventoryService:
     def set_notice(self, player: PlayerState, key: str, seconds: float = 2.2) -> None:
         player.notice = key
         player.notice_timer = max(player.notice_timer, seconds)
+
+    def resolve_loot_item_key(self, loot: LootState) -> str:
+        if loot.payload in ITEMS:
+            return loot.payload
+
+        if loot.kind == "ammo":
+            return "ammo_pack"
+
+        if loot.kind == "medkit":
+            return "medicine"
+
+        if loot.kind == "armor":
+            legacy_armor = {
+                "light": "light_torso",
+                "medium": "medium_torso",
+                "tactical": "medium_torso",
+                "heavy": "heavy_torso",
+            }
+            return legacy_armor.get(loot.payload, loot.payload)
+
+        return LEGACY_LOOT_TO_ITEM.get(loot.payload, loot.payload)

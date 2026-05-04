@@ -5,6 +5,7 @@ from shared.models import ProjectileState
 from shared.systems.base import WorldSystem
 from shared.world.world_context import WorldContext
 from shared.world.world_state import WorldState
+from shared.systems.events.game_events import DamagePlayerEvent, DamageSoldierEvent, DamageZombieEvent
 
 
 class ProjectileSystem(WorldSystem):
@@ -64,10 +65,12 @@ class ProjectileSystem(WorldSystem):
             spec = ZOMBIES[zombie.kind]
 
             if projectile.pos.distance_to(zombie.pos) <= spec.radius + projectile.radius:
-                ctx.damage.damage_zombie(
-                    zombie,
-                    projectile.damage,
-                    projectile.owner_id,
+                ctx.events.emit(
+                    DamageZombieEvent(
+                        zombie_id=zombie.id,
+                        damage=projectile.damage,
+                        attacker_id=projectile.owner_id,
+                    )
                 )
                 return True
 
@@ -89,10 +92,12 @@ class ProjectileSystem(WorldSystem):
             spec = SOLDIERS[soldier.kind]
 
             if projectile.pos.distance_to(soldier.pos) <= spec.radius + projectile.radius:
-                ctx.damage.damage_soldier(
-                    soldier,
-                    projectile.damage,
-                    projectile.owner_id,
+                ctx.events.emit(
+                    DamageSoldierEvent(
+                        soldier_id=soldier.id,
+                        damage=projectile.damage,
+                        attacker_id=projectile.owner_id,
+                    )
                 )
                 return True
 
@@ -115,7 +120,12 @@ class ProjectileSystem(WorldSystem):
                 continue
 
             if projectile.pos.distance_to(player.pos) <= PLAYER_RADIUS + projectile.radius:
-                ctx.damage.damage_player(player, projectile.damage)
+                ctx.events.emit(
+                    DamagePlayerEvent(
+                        player_id=player.id,
+                        damage=projectile.damage,
+                    )
+                )
                 return True
 
         return False

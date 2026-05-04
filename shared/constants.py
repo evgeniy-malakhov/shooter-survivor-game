@@ -74,6 +74,13 @@ DEFAULT_WEAPONS = {
     },
 }
 
+AMMO_BY_WEAPON = {
+    "pistol": "pistol_ammo",
+    "smg": "smg_ammo",
+    "rifle": "rifle_ammo",
+    "shotgun": "shotgun_shells",
+}
+
 DEFAULT_ARMORS = {
     "none": {"title": "No Armor", "mitigation": 0.0, "armor_points": 0},
     "light": {"title": "Light Vest", "mitigation": 0.18, "armor_points": 45},

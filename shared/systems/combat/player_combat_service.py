@@ -2,12 +2,22 @@ from __future__ import annotations
 
 import math
 import random
+from typing import TYPE_CHECKING
 
 from shared.constants import MAP_HEIGHT, MAP_WIDTH, PLAYER_RADIUS, SHOT_NOISE, UNARMED_MELEE_NOISE, WEAPONS, ZOMBIES
 from shared.explosives import GRENADE_SPECS, MINE_SPECS, DEFAULT_GRENADE, DEFAULT_MINE
-from shared.models import GrenadeState, MineState, PlayerState, ProjectileState, Vec2
+from shared.models import PlayerState, Vec2
+from shared.systems.events.game_events import (
+    SpawnGrenadeEvent,
+    SpawnMineEvent,
+    SpawnProjectileEvent,
+    EmitSoundEvent,
+    DamageZombieEvent
+)
 from shared.world.world_state import WorldState
 from shared.items import ITEMS
+if TYPE_CHECKING:
+    from shared.world.world_context import WorldContext
 
 
 class PlayerCombatService:
@@ -15,7 +25,7 @@ class PlayerCombatService:
         self._state = state
         self._rng = rng
 
-    def shoot(self, player: PlayerState, ctx) -> None:
+    def shoot(self, player: PlayerState, ctx: "WorldContext") -> None:
         quick_item = player.quick_items.get(player.active_slot)
 
         if quick_item:
@@ -44,33 +54,51 @@ class PlayerCombatService:
         )
 
         direction = Vec2(math.cos(angle), math.sin(angle))
-        projectile_id = ctx.ids.next("shot")
+        #projectile_id = ctx.ids.next("shot")
 
-        self._state.projectiles[projectile_id] = ProjectileState(
-            id=projectile_id,
-            owner_id=player.id,
-            pos=Vec2(
-                player.pos.x + direction.x * (PLAYER_RADIUS + 8),
-                player.pos.y + direction.y * (PLAYER_RADIUS + 8),
-            ),
-            velocity=direction.scaled(spec.projectile_speed),
-            damage=spec.damage,
-            life=ctx.weapons.projectile_life(spec.projectile_speed),
-            radius=spec.projectile_radius,
-            floor=player.floor,
-            weapon_key=weapon.key,
+        ctx.events.emit(
+            SpawnProjectileEvent(
+                owner_id=player.id,
+                pos=Vec2(
+                    player.pos.x + direction.x * (PLAYER_RADIUS + 8),
+                    player.pos.y + direction.y * (PLAYER_RADIUS + 8),
+                ),
+                velocity=direction.scaled(spec.projectile_speed),
+                damage=spec.damage,
+                life=ctx.weapons.projectile_life(spec.projectile_speed),
+                radius=spec.projectile_radius,
+                floor=player.floor,
+                weapon_key=weapon.key,
+            )
         )
+
+        # self._state.projectiles[projectile_id] = ProjectileState(
+        #     id=projectile_id,
+        #     owner_id=player.id,
+        #     pos=Vec2(
+        #         player.pos.x + direction.x * (PLAYER_RADIUS + 8),
+        #         player.pos.y + direction.y * (PLAYER_RADIUS + 8),
+        #     ),
+        #     velocity=direction.scaled(spec.projectile_speed),
+        #     damage=spec.damage,
+        #     life=ctx.weapons.projectile_life(spec.projectile_speed),
+        #     radius=spec.projectile_radius,
+        #     floor=player.floor,
+        #     weapon_key=weapon.key,
+        # )
 
         weapon.ammo_in_mag -= 1
         weapon.cooldown = 1.0 / ctx.weapons.fire_rate(weapon)
 
-        ctx.sounds.emit(
-            pos=player.pos,
-            floor=player.floor,
-            radius=SHOT_NOISE,
-            source_player_id=player.id,
-            kind="shot",
-            intensity=1.0,
+        ctx.events.emit(
+            EmitSoundEvent(
+                pos=player.pos.copy(),
+                floor=player.floor,
+                radius=SHOT_NOISE,
+                source_player_id=player.id,
+                kind="shot",
+                intensity=1.0,
+            )
         )
 
     def unarmed_attack(self, player: PlayerState, ctx) -> None:
@@ -79,13 +107,15 @@ class PlayerCombatService:
 
         player.melee_cooldown = 0.55
 
-        ctx.sounds.emit(
-            pos=player.pos,
-            floor=player.floor,
-            radius=UNARMED_MELEE_NOISE,
-            source_player_id=player.id,
-            kind="melee",
-            intensity=0.45,
+        ctx.events.emit(
+            EmitSoundEvent(
+                pos=player.pos.copy(),
+                floor=player.floor,
+                radius=UNARMED_MELEE_NOISE,
+                source_player_id=player.id,
+                kind="melee",
+                intensity=0.45,
+            )
         )
 
         reach = PLAYER_RADIUS + 34
@@ -97,11 +127,13 @@ class PlayerCombatService:
             spec = ZOMBIES[zombie.kind]
 
             if player.pos.distance_to(zombie.pos) <= reach + spec.radius:
-                ctx.damage.damage_zombie(
-                    zombie,
-                    12,
-                    player.id,
-                    source_pos=player.pos,
+                ctx.events.emit(
+                    DamageZombieEvent(
+                        zombie_id=zombie.id,
+                        damage=12,
+                        attacker_id=player.id,
+                        source_pos=player.pos.copy(),
+                    )
                 )
                 return
 
@@ -156,17 +188,16 @@ class PlayerCombatService:
         if ctx.geometry.blocked_at(place_pos, 12, player.floor):
             place_pos = player.pos.copy()
 
-        mine_id = ctx.ids.next("m")
-
-        self._state.mines[mine_id] = MineState(
-            id=mine_id,
-            owner_id=player.id,
-            kind=item.key,
-            pos=place_pos,
-            floor=player.floor,
-            armed=False,
-            trigger_radius=mine_spec.trigger_radius,
-            blast_radius=mine_spec.blast_radius,
+        ctx.events.emit(
+            SpawnMineEvent(
+                owner_id=player.id,
+                kind=item.key,
+                pos=place_pos,
+                floor=player.floor,
+                armed=False,
+                trigger_radius=mine_spec.trigger_radius,
+                blast_radius=mine_spec.blast_radius,
+            )
         )
 
         item.amount -= 1
@@ -197,16 +228,15 @@ class PlayerCombatService:
             player.pos.y + math.sin(player.angle) * (PLAYER_RADIUS + 12),
         )
 
-        grenade_id = ctx.ids.next("g")
-
-        self._state.grenades[grenade_id] = GrenadeState(
-            grenade_id,
-            player.id,
-            start,
-            velocity,
-            timer=grenade_spec.timer,
-            floor=player.floor,
-            kind=grenade_key,
+        ctx.events.emit(
+            SpawnGrenadeEvent(
+                owner_id=player.id,
+                kind=grenade_key,
+                pos=start,
+                velocity=velocity,
+                timer=grenade_spec.timer,
+                floor=player.floor,
+            )
         )
 
     def throw_grenade(self, player: PlayerState, ctx) -> None:

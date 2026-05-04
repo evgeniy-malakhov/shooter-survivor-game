@@ -8,6 +8,7 @@ from shared.models import GrenadeState, MineState, Vec2
 from shared.systems.base import WorldSystem
 from shared.world.world_context import WorldContext
 from shared.world.world_state import WorldState
+from shared.systems.events.game_events import EmitSoundEvent, DamagePlayerEvent, DamageZombieEvent, DamageSoldierEvent
 
 
 class ExplosiveSystem(WorldSystem):
@@ -116,13 +117,15 @@ class ExplosiveSystem(WorldSystem):
     def _detonate_grenade(self, state: WorldState, ctx: WorldContext, grenade: GrenadeState) -> None:
         spec = GRENADE_SPECS.get(grenade.kind, DEFAULT_GRENADE)
 
-        ctx.sounds.emit(
-            pos=grenade.pos,
-            floor=grenade.floor,
-            radius=1800.0,
-            source_player_id=grenade.owner_id,
-            kind="explosion",
-            intensity=1.4,
+        ctx.events.emit(
+            EmitSoundEvent(
+                pos=grenade.pos.copy(),
+                floor=grenade.floor,
+                radius=1800.0,
+                source_player_id=grenade.owner_id,
+                kind="explosion",
+                intensity=1.4,
+            )
         )
 
         self._explode_at(
@@ -136,18 +139,22 @@ class ExplosiveSystem(WorldSystem):
             spec.zombie_damage_bonus,
             spec.player_damage,
             spec.player_damage_bonus,
+            spec.soldier_damage,
+            spec.soldier_damage_bonus,
         )
 
     def _detonate_mine(self, state: WorldState, ctx: WorldContext, mine: MineState) -> None:
         spec = MINE_SPECS.get(mine.kind, DEFAULT_MINE)
 
-        ctx.sounds.emit(
-            pos=mine.pos,
-            floor=mine.floor,
-            radius=1500.0,
-            source_player_id=mine.owner_id,
-            kind="explosion",
-            intensity=1.25,
+        ctx.events.emit(
+            EmitSoundEvent(
+                pos=mine.pos.copy(),
+                floor=mine.floor,
+                radius=1500.0,
+                source_player_id=mine.owner_id,
+                kind="explosion",
+                intensity=1.25,
+            )
         )
 
         self._explode_at(
@@ -161,6 +168,8 @@ class ExplosiveSystem(WorldSystem):
             spec.zombie_damage_bonus,
             spec.player_damage,
             spec.player_damage_bonus,
+            spec.soldier_damage,
+            spec.soldier_damage_bonus,
         )
 
     def _explode_at(
@@ -175,6 +184,8 @@ class ExplosiveSystem(WorldSystem):
         zombie_damage_bonus: int,
         player_damage: int,
         player_damage_bonus: int,
+        soldier_damage: int,
+        soldier_damage_bonus: int,
     ) -> None:
         for zombie in list(state.zombies.values()):
             if zombie.floor != floor:
@@ -185,12 +196,32 @@ class ExplosiveSystem(WorldSystem):
             if distance <= blast_radius and not ctx.geometry.line_blocked(pos, zombie.pos, floor):
                 damage = int(zombie_damage * (1.0 - distance / blast_radius)) + zombie_damage_bonus
 
-                ctx.damage.damage_zombie(
-                    zombie,
-                    damage,
-                    owner_id,
-                    source_pos=pos,
-                    reveal_owner=False,
+                ctx.events.emit(
+                    DamageZombieEvent(
+                        zombie_id=zombie.id,
+                        damage=damage,
+                        attacker_id=owner_id,
+                        source_pos=pos.copy(),
+                        reveal_owner=False,
+                    )
+                )
+
+        for soldier in state.soldiers.values():
+            if soldier.floor != floor or not soldier.alive:
+                continue
+
+            distance = soldier.pos.distance_to(pos)
+
+            if distance <= blast_radius and not ctx.geometry.line_blocked(pos, soldier.pos, floor):
+                damage = int(soldier_damage * (1.0 - distance / blast_radius)) + soldier_damage_bonus
+                ctx.events.emit(
+                    DamageSoldierEvent(
+                        soldier_id=soldier.id,
+                        damage=damage,
+                        attacker_id=owner_id,
+                        source_pos=pos.copy(),
+                        reveal_owner=False,
+                    )
                 )
 
         for player in state.players.values():
@@ -202,4 +233,9 @@ class ExplosiveSystem(WorldSystem):
 
             if distance <= player_radius and not ctx.geometry.line_blocked(pos, player.pos, floor):
                 damage = int(player_damage * (1.0 - distance / player_radius)) + player_damage_bonus
-                ctx.damage.damage_player(player, damage)
+                ctx.events.emit(
+                    DamagePlayerEvent(
+                        player_id=player.id,
+                        damage=damage,
+                    )
+                )

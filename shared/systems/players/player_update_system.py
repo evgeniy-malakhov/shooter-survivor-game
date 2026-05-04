@@ -14,25 +14,10 @@ from shared.models import Vec2
 from shared.systems.base import WorldSystem
 from shared.world.world_context import WorldContext
 from shared.world.world_state import WorldState
+from shared.systems.events.game_events import EmitSoundEvent
 
 
 class PlayerUpdateSystem(WorldSystem):
-    def __init__(
-        self,
-        *,
-        update_notice: Callable,
-        update_healing: Callable,
-        player_noise: Callable,
-        interact: Callable,
-        respawn_player: Callable,
-    ) -> None:
-        self._update_notice = update_notice
-        self._update_healing = update_healing
-        self._player_noise = player_noise
-
-        self._interact = interact
-        self._respawn_player = respawn_player
-
     def update(self, state: WorldState, ctx: WorldContext, dt: float) -> None:
         for player in state.players.values():
             command = state.inputs.get(player.id)
@@ -45,15 +30,15 @@ class PlayerUpdateSystem(WorldSystem):
                 state.grenade_cooldowns.get(player.id, 0.0) - dt,
             )
 
-            self._update_notice(player, dt)
+            ctx.player_status.update_notice(player, dt)
 
             if not player.alive:
                 if command.respawn:
-                    self._respawn_player(player.id)
+                    ctx.respawn.respawn(player)
                 continue
 
             self._apply_discrete_input(player, command, ctx)
-            self._update_healing(player, dt)
+            ctx.player_status.update_healing(player, dt)
 
             player.melee_cooldown = max(0.0, player.melee_cooldown - dt)
 
@@ -76,7 +61,7 @@ class PlayerUpdateSystem(WorldSystem):
             weapon = player.active_weapon()
             meleeing = command.alt_attack and weapon is None
 
-            player.noise = self._player_noise(
+            player.noise = ctx.player_status.noise(
                 player,
                 movement,
                 command.shooting,
@@ -94,13 +79,15 @@ class PlayerUpdateSystem(WorldSystem):
             player.inside_building = ctx.buildings.point_building(player.pos)
 
             if player.noise > 0.0 and not player.inside_building:
-                ctx.sounds.emit(
-                    pos=player.pos,
-                    floor=player.floor,
-                    radius=player.noise,
-                    source_player_id=player.id,
-                    kind="movement",
-                    intensity=0.45 if player.sprinting else 0.25,
+                ctx.events.emit(
+                    EmitSoundEvent(
+                        pos=player.pos.copy(),
+                        floor=player.floor,
+                        radius=player.noise,
+                        source_player_id=player.id,
+                        kind="movement",
+                        intensity=0.45 if player.sprinting else 0.25,
+                    )
                 )
 
             ctx.weapons.update_player_weapons(player, dt)
@@ -111,7 +98,7 @@ class PlayerUpdateSystem(WorldSystem):
                 ctx.inventory.pickup_nearby(player)
 
             if command.interact:
-                interacted = self._interact(player)
+                interacted = ctx.interactions.interact(player)
 
             if command.toggle_utility and not interacted:
                 ctx.weapons.toggle_utility(player)
