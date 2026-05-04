@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 
-from shared.constants import PLAYER_RADIUS, ZOMBIES
+from shared.constants import PLAYER_RADIUS, ZOMBIES, SOLDIERS
 from shared.explosives import DEFAULT_GRENADE, DEFAULT_MINE, GRENADE_SPECS, MINE_SPECS
 from shared.models import GrenadeState, MineState, Vec2
 from shared.systems.base import WorldSystem
@@ -92,7 +92,11 @@ class ExplosiveSystem(WorldSystem):
         return False
 
     def _mine_has_trigger(self, state: WorldState, ctx: WorldContext, mine: MineState) -> bool:
-        for zombie in state.zombies.values():
+        for zombie in ctx.spatial.nearby_zombies(
+            mine.pos,
+            mine.trigger_radius + 128.0,
+            mine.floor,
+        ):
             if zombie.floor != mine.floor:
                 continue
 
@@ -102,12 +106,29 @@ class ExplosiveSystem(WorldSystem):
             ):
                 return True
 
-        for player in state.players.values():
+        for soldier in ctx.spatial.nearby_soldiers(
+            mine.pos,
+            mine.trigger_radius + 128.0,
+            mine.floor,
+        ):
+            if soldier.floor != mine.floor or not soldier.alive:
+                continue
+            if (
+                mine.pos.distance_to(soldier.pos) <= mine.trigger_radius + SOLDIERS[soldier.kind].radius * 0.35
+                and not ctx.geometry.line_blocked(mine.pos, soldier.pos, mine.floor)
+            ):
+                return True
+
+        for player in ctx.spatial.nearby_players(
+            mine.pos,
+            mine.trigger_radius + PLAYER_RADIUS,
+            mine.floor,
+        ):
             if not player.alive or player.floor != mine.floor:
                 continue
 
             if (
-                player.pos.distance_to(mine.pos) <= mine.trigger_radius + PLAYER_RADIUS * 0.25
+                mine.pos.distance_to(player.pos) <= mine.trigger_radius + PLAYER_RADIUS * 0.25
                 and not ctx.geometry.line_blocked(mine.pos, player.pos, mine.floor)
             ):
                 return True
