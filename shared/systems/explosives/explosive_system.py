@@ -187,7 +187,7 @@ class ExplosiveSystem(WorldSystem):
         soldier_damage: int,
         soldier_damage_bonus: int,
     ) -> None:
-        for zombie in list(state.zombies.values()):
+        for zombie in ctx.spatial.nearby_zombies(pos, blast_radius, floor):
             if zombie.floor != floor:
                 continue
 
@@ -206,25 +206,28 @@ class ExplosiveSystem(WorldSystem):
                     )
                 )
 
-        for soldier in state.soldiers.values():
+        for soldier in ctx.spatial.nearby_soldiers(pos, blast_radius, floor):
             if soldier.floor != floor or not soldier.alive:
                 continue
 
             distance = soldier.pos.distance_to(pos)
 
             if distance <= blast_radius and not ctx.geometry.line_blocked(pos, soldier.pos, floor):
-                damage = int(soldier_damage * (1.0 - distance / blast_radius)) + soldier_damage_bonus
+                # just a test of new damage for soldier based on factor
+                factor = 1.0 - min(1.0, distance / max(1.0, blast_radius))
+                damage = max(1, int(soldier_damage * factor))
+                #damage = int(soldier_damage * (1.0 - distance / blast_radius)) + soldier_damage_bonus
                 ctx.events.emit(
                     DamageSoldierEvent(
                         soldier_id=soldier.id,
                         damage=damage,
                         attacker_id=owner_id,
-                        source_pos=pos.copy(),
-                        reveal_owner=False,
+                        #source_pos=pos.copy(),
+                        #reveal_owner=False,
                     )
                 )
 
-        for player in state.players.values():
+        for player in ctx.spatial.nearby_players(pos, blast_radius, floor):
             if player.floor != floor or not player.alive:
                 continue
 
