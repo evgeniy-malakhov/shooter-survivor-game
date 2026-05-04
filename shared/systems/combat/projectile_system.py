@@ -58,7 +58,12 @@ class ProjectileSystem(WorldSystem):
         state: WorldState,
         ctx: WorldContext,
     ) -> bool:
-        for zombie in list(state.zombies.values()):
+        hit_query_radius = max(128.0, projectile.radius + 96.0)
+        for zombie in ctx.spatial.nearby_zombies(
+            projectile.pos,
+            hit_query_radius,
+            projectile.floor,
+        ):
             if zombie.floor != projectile.floor:
                 continue
 
@@ -82,7 +87,12 @@ class ProjectileSystem(WorldSystem):
         state: WorldState,
         ctx: WorldContext,
     ) -> bool:
-        for soldier in list(state.soldiers.values()):
+        hit_query_radius = max(128.0, projectile.radius + 96.0)
+        for soldier in ctx.spatial.nearby_soldiers(
+            projectile.pos,
+            hit_query_radius,
+            projectile.floor,
+        ):
             if soldier.floor != projectile.floor:
                 continue
 
@@ -109,7 +119,13 @@ class ProjectileSystem(WorldSystem):
         state: WorldState,
         ctx: WorldContext,
     ) -> bool:
-        for player in list(state.players.values()):
+        hit_query_radius = max(128.0, projectile.radius + 96.0)
+        for player in ctx.spatial.nearby_players(
+            projectile.pos,
+            hit_query_radius,
+            projectile.floor,
+        ):
+        # for player in list(state.players.values()):
             if not player.alive:
                 continue
 

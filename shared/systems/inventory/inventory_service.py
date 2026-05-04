@@ -24,6 +24,7 @@ class InventoryService:
         buildings,
         ids,
         events,
+        spatial,
     ) -> None:
         self._state = state
         self._rng = rng
@@ -32,18 +33,22 @@ class InventoryService:
         self._buildings = buildings
         self._ids = ids
         self._events = events
+        self._spatial = spatial
 
     def nearest_loot(self, player: PlayerState) -> LootState | None:
         best: LootState | None = None
         best_distance = float("inf")
 
-        for loot in self._state.loot.values():
-            if loot.floor != player.floor:
-                continue
+        candidates = self._spatial.nearby_loot(
+            player.pos,
+            PICKUP_RADIUS,
+            player.floor,
+        )
 
+        for loot in candidates:
             distance = player.pos.distance_to(loot.pos)
 
-            if distance <= PICKUP_RADIUS and distance < best_distance:
+            if distance < best_distance:
                 best = loot
                 best_distance = distance
 

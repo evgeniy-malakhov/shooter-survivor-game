@@ -336,6 +336,7 @@ class GameWorld:
             buildings=building_service,
             ids=id_generator,
             events=event_buffer,
+            spatial=spatial_service
         )
 
         player_service = PlayerService(
@@ -376,12 +377,12 @@ class GameWorld:
             weapons=weapon_runtime_service,
             player_combat=player_combat_service,
             player_status=player_status_service,
+            spatial=spatial_service,
             inventory=inventory_service,
             interactions=interaction_service,
             soldier_runtime=soldier_runtime_service,
             zombie_runtime=zombie_runtime_service,
             events=event_buffer,
-            spatial=spatial_service,
         )
 
         self.systems = SystemScheduler([
