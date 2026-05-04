@@ -3,7 +3,7 @@ from __future__ import annotations
 import random
 import threading
 from concurrent.futures import Future
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any
 
 from shared.systems.combat.damage_service import DamageService
@@ -62,6 +62,9 @@ from shared.systems.actors.zombie_runtime_service import ZombieRuntimeService
 from shared.systems.actors.zombie_runtime_system import ZombieRuntimeSystem
 from shared.systems.players.player_service import PlayerService
 from shared.systems.players.player_status_service import PlayerStatusService
+
+from shared.systems.spatial.spatial_index_service import SpatialIndexService
+from shared.systems.spatial.spatial_index_system import SpatialIndexSystem
 
 from shared.ai.pathfinding import GridPathfinder
 from shared.ai.registry import ZOMBIE_AI_REGISTRY
@@ -186,6 +189,7 @@ class GameWorld:
         self.buildings = self.state.buildings
 
         event_buffer = EventBuffer()
+        spatial_service = SpatialIndexService(cell_size=256)
 
         self.initial_zombies = (
             difficulty.initial_zombies
@@ -377,10 +381,14 @@ class GameWorld:
             soldier_runtime=soldier_runtime_service,
             zombie_runtime=zombie_runtime_service,
             events=event_buffer,
+            spatial=spatial_service,
         )
 
         self.systems = SystemScheduler([
             PlayerUpdateSystem(),
+
+            SpatialIndexSystem(),
+
             ProjectileSystem(),
             ExplosiveSystem(),
             PoisonSystem(),
@@ -404,6 +412,7 @@ class GameWorld:
 
         self._prime_map()
         EventApplySystem().update(self.state, self.ctx, 0.0)
+        self.ctx.spatial.rebuild(self.state)
 
     def close(self) -> None:
         self.ctx.process_pool.close()

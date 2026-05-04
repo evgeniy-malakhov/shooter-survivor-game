@@ -31,6 +31,7 @@ from shared.systems.interactions.interaction_service import InteractionService
 from shared.systems.actors.soldier_runtime_service import SoldierRuntimeService
 from shared.systems.actors.zombie_runtime_service import ZombieRuntimeService
 from shared.systems.players.player_status_service import PlayerStatusService
+from shared.systems.spatial.spatial_index_service import SpatialIndexService
 
 from shared.systems.events.event_buffer import EventBuffer
 
@@ -72,3 +73,4 @@ class WorldContext:
     zombie_runtime: ZombieRuntimeService
 
     events: EventBuffer
+    spatial: SpatialIndexService
