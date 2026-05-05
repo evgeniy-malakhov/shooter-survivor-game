@@ -20,6 +20,8 @@ class GrenadeSpec:
     zombie_damage_bonus: int
     player_damage: int
     player_damage_bonus: int
+    soldier_damage: int
+    soldier_damage_bonus: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +34,8 @@ class MineSpec:
     zombie_damage_bonus: int
     player_damage: int
     player_damage_bonus: int
+    soldier_damage: int
+    soldier_damage_bonus: int
 
 
 DEFAULT_GRENADE = GrenadeSpec(
@@ -45,6 +49,8 @@ DEFAULT_GRENADE = GrenadeSpec(
     zombie_damage_bonus=28,
     player_damage=42,
     player_damage_bonus=8,
+    soldier_damage=42,
+    soldier_damage_bonus=8,
 )
 
 DEFAULT_MINE = MineSpec(
@@ -56,6 +62,8 @@ DEFAULT_MINE = MineSpec(
     zombie_damage_bonus=32,
     player_damage=48,
     player_damage_bonus=12,
+    soldier_damage=48,
+    soldier_damage_bonus=12,
 )
 
 
@@ -75,6 +83,8 @@ def _load() -> tuple[dict[str, GrenadeSpec], dict[str, MineSpec]]:
             zombie_damage_bonus=max(0, int(raw.get("zombie_damage_bonus", DEFAULT_GRENADE.zombie_damage_bonus))),
             player_damage=max(1, int(raw.get("player_damage", DEFAULT_GRENADE.player_damage))),
             player_damage_bonus=max(0, int(raw.get("player_damage_bonus", DEFAULT_GRENADE.player_damage_bonus))),
+            soldier_damage=max(1, int(raw.get("soldier_damage", DEFAULT_GRENADE.soldier_damage))),
+            soldier_damage_bonus=max(0, int(raw.get('soldier_damage_bonus', DEFAULT_GRENADE.soldier_damage_bonus)))
         )
         for key, raw in dict(data.get("grenades", {})).items()
     }
@@ -88,6 +98,8 @@ def _load() -> tuple[dict[str, GrenadeSpec], dict[str, MineSpec]]:
             zombie_damage_bonus=max(0, int(raw.get("zombie_damage_bonus", DEFAULT_MINE.zombie_damage_bonus))),
             player_damage=max(1, int(raw.get("player_damage", DEFAULT_MINE.player_damage))),
             player_damage_bonus=max(0, int(raw.get("player_damage_bonus", DEFAULT_MINE.player_damage_bonus))),
+            soldier_damage=max(1, int(raw.get("soldier_damage", DEFAULT_MINE.soldier_damage))),
+            soldier_damage_bonus=max(0, int(raw.get('soldier_damage_bonus', DEFAULT_MINE.soldier_damage_bonus)))
         )
         for key, raw in dict(data.get("mines", {})).items()
     }

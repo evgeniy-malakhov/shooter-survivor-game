@@ -51,10 +51,15 @@ def _read_config(key: str) -> dict[str, object]:
 
 def _clamp(config: DifficultyConfig) -> DifficultyConfig:
     initial_zombies = max(0, int(config.initial_zombies))
+    max_zombies = max(0, int(config.max_zombies))
+    if max_zombies > 0:
+        initial_zombies = min(initial_zombies, max_zombies)
+    else:
+        initial_zombies = 0
     return DifficultyConfig(
         key=config.key,
         initial_zombies=initial_zombies,
-        max_zombies=max(1, initial_zombies, int(config.max_zombies)),
+        max_zombies=max_zombies,
         zombie_health_multiplier=max(0.1, float(config.zombie_health_multiplier)),
         zombie_armor_multiplier=max(0.0, float(config.zombie_armor_multiplier)),
         zombie_speed_multiplier=max(0.1, float(config.zombie_speed_multiplier)),

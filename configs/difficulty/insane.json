@@ -1,7 +1,7 @@
 {
   "key": "insane",
-  "initial_zombies": 64,
-  "max_zombies": 128,
+  "initial_zombies": 20,
+  "max_zombies": 50,
   "zombie_health_multiplier": 1.9,
   "zombie_armor_multiplier": 1.8,
   "zombie_speed_multiplier": 1.45,
