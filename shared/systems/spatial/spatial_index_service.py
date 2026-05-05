@@ -5,6 +5,7 @@ from typing import Iterable, TypeVar
 
 from shared.models import LootState, PlayerState, SoldierState, Vec2, ZombieState
 from shared.world.world_state import WorldState
+from shared.ai.context import SoundEvent
 
 
 T = TypeVar("T")
@@ -18,12 +19,14 @@ class SpatialIndexService:
         self._zombies: dict[tuple[int, int, int], list[ZombieState]] = defaultdict(list)
         self._soldiers: dict[tuple[int, int, int], list[SoldierState]] = defaultdict(list)
         self._loot: dict[tuple[int, int, int], list[LootState]] = defaultdict(list)
+        self._sounds: dict[tuple[int, int, int], list[SoundEvent]] = defaultdict(list)
 
     def rebuild(self, state: WorldState) -> None:
         self._players.clear()
         self._zombies.clear()
         self._soldiers.clear()
         self._loot.clear()
+        self._sounds.clear()
 
         for player in state.players.values():
             if player.alive:
@@ -40,6 +43,9 @@ class SpatialIndexService:
         for loot in state.loot.values():
             self._loot[self._cell_key(loot.pos, loot.floor)].append(loot)
 
+        for sound in state.sound_events:
+            self._sounds[self._cell_key(sound.pos, sound.floor)].append(sound)
+
     def nearby_players(self, pos: Vec2, radius: float, floor: int) -> list[PlayerState]:
         return list(self._nearby(self._players, pos, radius, floor))
 
@@ -51,6 +57,9 @@ class SpatialIndexService:
 
     def nearby_loot(self, pos: Vec2, radius: float, floor: int) -> list[LootState]:
         return list(self._nearby(self._loot, pos, radius, floor))
+
+    def nearby_sounds(self, pos: Vec2, radius: float, floor: int) -> list[SoundEvent]:
+        return list(self._nearby(self._sounds, pos, radius, floor))
 
     def _nearby(
         self,

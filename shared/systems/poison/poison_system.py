@@ -28,7 +28,7 @@ class PoisonSystem(WorldSystem):
                 or spit.pos.distance_to(spit.target) <= 18
             )
 
-            hit_player = self._find_hit_player(state, spit.pos, spit.radius, spit.floor)
+            hit_player = self._find_hit_player(ctx, spit.pos, spit.radius, spit.floor)
 
             if hit_player:
                 ctx.events.emit(
@@ -56,12 +56,15 @@ class PoisonSystem(WorldSystem):
                 expired.append(pool.id)
                 continue
 
-            for player in state.players.values():
-                if (
-                    player.alive
-                    and player.floor == pool.floor
-                    and player.pos.distance_to(pool.pos) <= pool.radius + PLAYER_RADIUS * 0.35
-                ):
+            for player in ctx.spatial.nearby_players(
+                pool.pos,
+                pool.radius + PLAYER_RADIUS,
+                pool.floor,
+            ):
+                if not player.alive:
+                    continue
+
+                if player.pos.distance_to(pool.pos) <= pool.radius + PLAYER_RADIUS * 0.35:
                     ctx.events.emit(
                         ApplyPoisonEvent(
                             player_id=player.id,
@@ -112,17 +115,20 @@ class PoisonSystem(WorldSystem):
 
     def _find_hit_player(
         self,
-        state: WorldState,
+        ctx: WorldContext,
         pos: Vec2,
         radius: float,
         floor: int,
     ) -> PlayerState | None:
-        for player in state.players.values():
-            if (
-                player.alive
-                and player.floor == floor
-                and player.pos.distance_to(pos) <= PLAYER_RADIUS + radius
-            ):
+        for player in ctx.spatial.nearby_players(
+            pos,
+            PLAYER_RADIUS + radius + 32.0,
+            floor,
+        ):
+            if not player.alive:
+                continue
+
+            if player.pos.distance_to(pos) <= PLAYER_RADIUS + radius:
                 return player
 
         return None

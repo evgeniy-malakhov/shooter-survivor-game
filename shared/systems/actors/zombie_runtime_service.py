@@ -51,10 +51,22 @@ class ZombieRuntimeService:
     def registry(self):
         return self._zombie_ai_registry
 
-    def targets(self) -> tuple[ActorTarget, ...]:
+    def targets_near_zombie(self, zombie: ZombieState, ctx) -> tuple[ActorTarget, ...]:
+        spec = ZOMBIES[zombie.kind]
+
+        query_radius = max(
+            spec.sight_range,
+            spec.hearing_range * max(0.1, spec.sensitivity),
+            1200.0,
+        )
+
         targets: list[ActorTarget] = []
 
-        for player in self._state.players.values():
+        for player in ctx.spatial.nearby_players(
+            zombie.pos,
+            query_radius,
+            zombie.floor,
+        ):
             if not player.alive:
                 continue
 
@@ -72,11 +84,15 @@ class ZombieRuntimeService:
                 )
             )
 
-        for soldier in self._state.soldiers.values():
+        for soldier in ctx.spatial.nearby_soldiers(
+            zombie.pos,
+            query_radius,
+            zombie.floor,
+        ):
             if not soldier.alive:
                 continue
 
-            spec = SOLDIERS[soldier.kind]
+            soldier_spec = SOLDIERS[soldier.kind]
 
             targets.append(
                 ActorTarget(
@@ -85,8 +101,9 @@ class ZombieRuntimeService:
                     pos=soldier.pos.copy(),
                     floor=soldier.floor,
                     alive=True,
-                    radius=spec.radius,
+                    radius=soldier_spec.radius,
                     health=soldier.health,
+                    sprinting=False,
                     inside_building=None,
                 )
             )
@@ -117,13 +134,17 @@ class ZombieRuntimeService:
 
     def can_hear(self, zombie: ZombieState, ctx) -> SoundEvent | None:
         spec = ZOMBIES[zombie.kind]
+
+        max_hearing_radius = spec.hearing_range * max(0.1, spec.sensitivity) + 1800.0
+
         best: SoundEvent | None = None
         best_distance = float("inf")
 
-        for sound in self._state.sound_events:
-            if sound.floor != zombie.floor:
-                continue
-
+        for sound in ctx.spatial.nearby_sounds(
+            zombie.pos,
+            max_hearing_radius,
+            zombie.floor,
+        ):
             distance = zombie.pos.distance_to(sound.pos)
 
             hearing_radius = sound.radius * spec.sensitivity
@@ -131,7 +152,12 @@ class ZombieRuntimeService:
             if distance > hearing_radius:
                 continue
 
-            if ctx.geometry.line_blocked(zombie.pos, sound.pos, zombie.floor, sound=True):
+            if ctx.geometry.line_blocked(
+                zombie.pos,
+                sound.pos,
+                zombie.floor,
+                sound=True,
+            ):
                 continue
 
             if distance < best_distance:
@@ -306,7 +332,7 @@ class ZombieRuntimeService:
         return ZombieContext(
             zombie=zombie,
             players=players,
-            targets=self.targets(),
+            targets=self.targets_near_zombie(zombie, ctx),
             dt=dt,
             time=self._state.time,
             rng=rng,

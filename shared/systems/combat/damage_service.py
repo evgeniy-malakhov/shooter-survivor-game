@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import random
+from typing import Callable
 
 from shared.constants import ARMORS, MAP_HEIGHT, MAP_WIDTH, SEARCH_DURATION
 from shared.difficulty import DifficultyConfig
@@ -19,7 +20,7 @@ class DamageService:
         soldiers: dict[str, SoldierState],
         difficulty: DifficultyConfig,
         rng: random.Random,
-        drop_from_zombie,
+        drop_from_zombie: Callable[[Vec2], None],
         zombie_ai_generation: dict[str, int],
         zombie_ai_pending: dict,
         zombie_ai_next_at: dict[str, float],

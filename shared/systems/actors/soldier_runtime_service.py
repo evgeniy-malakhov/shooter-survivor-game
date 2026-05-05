@@ -41,7 +41,7 @@ class SoldierRuntimeService:
 
         return SoldierContext(
             soldier=soldier,
-            targets=self.targets(),
+            targets=self.targets_near_soldier(soldier, ctx),
             dt=dt,
             time=self._state.time,
             rng=self._rng,
@@ -95,14 +95,25 @@ class SoldierRuntimeService:
                 )
             )
 
-    def targets(self) -> tuple[ActorTarget, ...]:
+    def targets_near_soldier(self, soldier: SoldierState, ctx) -> tuple[ActorTarget, ...]:
+        spec = SOLDIERS[soldier.kind]
+
+        query_radius = max(
+            spec.sight_range,
+            1200.0,
+        )
+
         targets: list[ActorTarget] = []
 
-        for zombie in self._state.zombies.values():
+        for zombie in ctx.spatial.nearby_zombies(
+            soldier.pos,
+            query_radius,
+            soldier.floor,
+        ):
             if zombie.health <= 0:
                 continue
 
-            spec = ZOMBIES[zombie.kind]
+            zombie_spec = ZOMBIES[zombie.kind]
 
             targets.append(
                 ActorTarget(
@@ -111,13 +122,17 @@ class SoldierRuntimeService:
                     pos=zombie.pos.copy(),
                     floor=zombie.floor,
                     alive=True,
-                    radius=spec.radius,
+                    radius=zombie_spec.radius,
                     health=zombie.health,
                     inside_building=zombie.inside_building,
                 )
             )
 
-        for player in self._state.players.values():
+        for player in ctx.spatial.nearby_players(
+            soldier.pos,
+            query_radius,
+            soldier.floor,
+        ):
             if not player.alive:
                 continue
 
@@ -127,10 +142,10 @@ class SoldierRuntimeService:
                     kind="player",
                     pos=player.pos.copy(),
                     floor=player.floor,
-                    alive=player.alive,
-                    sprinting=player.sprinting,
+                    alive=True,
                     radius=PLAYER_RADIUS,
                     health=player.health,
+                    sprinting=player.sprinting,
                     inside_building=player.inside_building,
                 )
             )
