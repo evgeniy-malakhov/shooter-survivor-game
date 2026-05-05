@@ -67,12 +67,9 @@ class InventoryService:
                 self.set_notice(player, "unknown_weapon")
                 return False
 
-            player.weapons[weapon_spec.slot] = WeaponRuntime(
-                loot.payload,
-                weapon_spec.magazine_size,
-                0,
-                rarity=loot.rarity,
-            )
+            if not self.pickup_weapon(player, loot.payload, rarity=loot.rarity):
+                self.set_notice(player, "inventory_full")
+                return False
 
         elif loot.kind in {"ammo", "armor", "item", "medkit"}:
             item_key = self.resolve_loot_item_key(loot)
@@ -376,9 +373,14 @@ class InventoryService:
             if not weapon_spec:
                 return item
 
-            displaced_weapon = player.weapons.get(weapon_spec.slot)
+            target_slot = slot if slot in SLOTS else weapon_spec.slot
 
-            player.weapons[weapon_spec.slot] = WeaponRuntime(
+            if player.quick_items.get(target_slot):
+                return item
+
+            displaced_weapon = player.weapons.get(target_slot)
+
+            player.weapons[target_slot] = WeaponRuntime(
                 item.key,
                 weapon_spec.magazine_size,
                 0,
@@ -449,6 +451,62 @@ class InventoryService:
             return displaced
 
         return item
+
+    def pickup_weapon(
+        self,
+        player: PlayerState,
+        weapon_key: str,
+        *,
+        rarity: str = "common",
+        durability: float | None = None,
+    ) -> bool:
+        weapon_spec = WEAPONS.get(weapon_key)
+
+        if not weapon_spec:
+            return False
+
+        slot = self.first_free_weapon_slot(player, weapon_spec.slot)
+
+        if slot:
+            player.weapons[slot] = WeaponRuntime(
+                weapon_key,
+                weapon_spec.magazine_size,
+                0,
+                rarity=rarity,
+                durability=100.0 if durability is None else durability,
+            )
+            return True
+
+        backpack_index = self.first_empty_backpack_index(player)
+
+        if backpack_index is None:
+            return False
+
+        player.backpack[backpack_index] = self._new_item(
+            weapon_key,
+            1,
+            rarity=rarity,
+            durability=100.0 if durability is None else durability,
+        )
+        return True
+
+    def first_free_weapon_slot(self, player: PlayerState, preferred_slot: str) -> str | None:
+        if preferred_slot in SLOTS and self.weapon_slot_is_free(player, preferred_slot):
+            return preferred_slot
+
+        return next(
+            (slot for slot in SLOTS if self.weapon_slot_is_free(player, slot)),
+            None,
+        )
+
+    def weapon_slot_is_free(self, player: PlayerState, slot: str) -> bool:
+        return player.weapons.get(slot) is None and player.quick_items.get(slot) is None
+
+    def first_empty_backpack_index(self, player: PlayerState) -> int | None:
+        return next(
+            (index for index, item in enumerate(player.backpack) if item is None),
+            None,
+        )
 
     def use_item(self, player: PlayerState, item: InventoryItem) -> bool:
         spec = ITEMS.get(item.key)

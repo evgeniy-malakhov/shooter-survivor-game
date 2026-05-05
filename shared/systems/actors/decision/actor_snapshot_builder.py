@@ -56,6 +56,7 @@ class ActorSnapshotBuilder:
         targets = ctx.soldier_runtime.targets_near_soldier(soldier, ctx)
         nearby_players = tuple(target for target in targets if target.kind == "player")
         nearby_zombies = tuple(target for target in targets if target.kind == "zombie")
+        nearby_sounds = self._nearby_sounds_for_soldier(soldier, ctx)
 
         return ActorDecisionInput(
             actor_type="soldier",
@@ -68,6 +69,7 @@ class ActorSnapshotBuilder:
             targets=targets,
             nearby_players=nearby_players,
             nearby_zombies=nearby_zombies,
+            nearby_sounds=nearby_sounds,
             metadata={
                 "cpu_heavy": bool(targets),
             },
@@ -114,4 +116,11 @@ class ActorSnapshotBuilder:
         return tuple(
             replace(sound, pos=Vec2(sound.pos.x, sound.pos.y))
             for sound in ctx.spatial.nearby_sounds(zombie.pos, radius, zombie.floor)
+        )
+
+    def _nearby_sounds_for_soldier(self, soldier: SoldierState, ctx) -> tuple[SoundEvent, ...]:
+        radius = ctx.soldier_runtime.soldier_hearing_query_radius(soldier.kind)
+        return tuple(
+            replace(sound, pos=Vec2(sound.pos.x, sound.pos.y))
+            for sound in ctx.spatial.nearby_sounds(soldier.pos, radius, soldier.floor)
         )

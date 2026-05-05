@@ -122,6 +122,14 @@ class DecisionScorer:
             if target.health <= 35:
                 score += self.weights.wounded_target
 
+            if target.sprinting:
+                score += self.weights.sprinting_target
+            else:
+                score += self.weights.sneaking_target if target.kind == "player" else 0.0
+
+            if ctx.zombie.target_player_id == target.id:
+                score += ctx.zombie.alertness * self.weights.persistence
+
             result.append(
                 ZombieDecision(
                     kind=ZombieDecisionKind.CHASE_VISIBLE_TARGET,

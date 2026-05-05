@@ -3,7 +3,11 @@ from __future__ import annotations
 import math
 import random
 
+from shared.ai.context import SoundEvent
 from shared.ai.soldiers.context import SoldierContext
+from shared.ai.soldiers.configs.heavy_grenadier import HEAVY_GRENADIER_HEARING
+from shared.ai.soldiers.configs.rifleman import RIFLEMAN_HEARING
+from shared.ai.soldiers.configs.schema import SoldierHearingTuning
 from shared.constants import MAP_HEIGHT, MAP_WIDTH, SOLDIERS, WEAPONS
 from shared.models import SoldierState, Vec2
 from shared.systems.actors.decision.actor_decision_dto import ActorDecisionInput
@@ -40,7 +44,9 @@ class SoldierDecisionPolicy:
             rng=rng,
             spec=spec,
             weapon=weapon,
+            sounds=decision_input.nearby_sounds,
             line_blocked=lambda start, end, floor: ctx.geometry.line_blocked(start, end, floor),
+            can_hear=lambda actor: self._can_hear(actor, decision_input, ctx),
             move_toward=lambda actor, target, delta_time, local_rng=None: self._move_toward(
                 actor,
                 target,
@@ -63,8 +69,41 @@ class SoldierDecisionPolicy:
             actor_kind=decision_input.actor_kind,
             actor_state=soldier.to_dict(),
             projectiles=list(result.projectiles),
+            grenades=list(result.grenades),
             sounds=list(result.sounds),
         )
+
+    def _can_hear(
+        self,
+        soldier: SoldierState,
+        decision_input: ActorDecisionInput,
+        ctx,
+    ) -> SoundEvent | None:
+        tuning = self._hearing_tuning(soldier.kind)
+        best: SoundEvent | None = None
+        best_distance = float("inf")
+
+        for sound in decision_input.nearby_sounds:
+            if sound.floor != soldier.floor:
+                continue
+
+            distance = soldier.pos.distance_to(sound.pos)
+            if distance > sound.radius * tuning.hearing_multiplier:
+                continue
+
+            if ctx.geometry.line_blocked(soldier.pos, sound.pos, soldier.floor, sound=True):
+                continue
+
+            if distance < best_distance:
+                best = sound
+                best_distance = distance
+
+        return best
+
+    def _hearing_tuning(self, kind: str) -> SoldierHearingTuning:
+        if kind == "heavy_grenadier":
+            return SoldierHearingTuning(**HEAVY_GRENADIER_HEARING)
+        return SoldierHearingTuning(**RIFLEMAN_HEARING)
 
     def _move_toward(
         self,

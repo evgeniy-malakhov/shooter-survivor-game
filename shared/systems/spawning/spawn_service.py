@@ -122,7 +122,7 @@ class SpawnService:
             pos.clamp_to_map(MAP_WIDTH, MAP_HEIGHT)
 
             floor = getattr(spawn_point, "floor", 0)
-            radius = SOLDIERS[spawn_point.kinds[0]].radius
+            radius = max(SOLDIERS[kind].radius for kind in spawn_point.kinds)
 
             if self._geometry.blocked_at(pos, radius, floor):
                 continue

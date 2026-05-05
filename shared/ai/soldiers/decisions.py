@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from enum import Enum
 
 from shared.ai.context import ActorTarget
+from shared.models import Vec2
+from shared.ai.soldiers.configs.schema import SoldierDecisionWeights, SoldierHearingTuning
 from shared.ai.soldiers.context import SoldierContext
 
 
@@ -14,6 +16,8 @@ class SoldierDecisionKind(str, Enum):
     RELOAD = "reload"
     RETREAT = "retreat"
     INVESTIGATE = "investigate"
+    INVESTIGATE_SOUND = "investigate_sound"
+    THROW_GRENADE = "throw_grenade"
 
 
 @dataclass(slots=True)
@@ -21,20 +25,12 @@ class SoldierDecision:
     kind: SoldierDecisionKind
     score: float
     target: ActorTarget | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class SoldierDecisionWeights:
-    zombie_priority: float = 160.0
-    player_priority: float = 110.0
-    distance: float = 80.0
-    low_ammo_reload: float = 250.0
-    close_threat_retreat: float = 220.0
-    guard: float = 10.0
+    pos: Vec2 | None = None
 
 
 class SoldierDecisionScorer:
     weights = SoldierDecisionWeights()
+    hearing_tuning = SoldierHearingTuning()
 
     def choose(self, ctx: SoldierContext) -> SoldierDecision:
         decisions: list[SoldierDecision] = []
@@ -62,11 +58,37 @@ class SoldierDecisionScorer:
             base = self.weights.zombie_priority if target.kind == "zombie" else self.weights.player_priority
             score = base + max(0.0, self.weights.distance - dist / 10.0)
 
+            if target.health <= 35:
+                score += self.weights.wounded_target
+
+            if target.sprinting:
+                score += self.weights.sprinting_target
+
+            if ctx.soldier.target_id == target.id:
+                score += ctx.soldier.alertness * 18.0
+
             decisions.append(
                 SoldierDecision(
                     kind=SoldierDecisionKind.COMBAT,
                     score=score,
                     target=target,
+                )
+            )
+
+        special = self._score_special(ctx, visible_targets)
+        if special:
+            decisions.append(special)
+
+        sound = self._score_sound(ctx)
+        if sound:
+            decisions.append(sound)
+
+        if ctx.soldier.last_known_pos and ctx.soldier.mode in {"combat", "investigate"}:
+            decisions.append(
+                SoldierDecision(
+                    kind=SoldierDecisionKind.INVESTIGATE,
+                    score=self.weights.investigate_last_known + ctx.soldier.alertness * 18.0,
+                    pos=ctx.soldier.last_known_pos.copy(),
                 )
             )
 
@@ -110,3 +132,39 @@ class SoldierDecisionScorer:
 
     def _danger_distance(self, ctx: SoldierContext) -> float:
         return max(170.0, ctx.spec.radius + 120.0)
+
+    def _score_sound(self, ctx: SoldierContext) -> SoldierDecision | None:
+        sound = ctx.can_hear(ctx.soldier)
+        if not sound:
+            return None
+
+        distance = ctx.soldier.pos.distance_to(sound.pos)
+        score = self.weights.sound_interest
+        score += sound.intensity * 42.0
+        score += max(0.0, self.weights.sound_distance - distance / 34.0)
+
+        if sound.kind == "shot":
+            score += self.hearing_tuning.shot_bonus
+        elif sound.kind == "explosion":
+            score += self.hearing_tuning.explosion_bonus
+        elif sound.kind == "movement":
+            score += self.hearing_tuning.movement_penalty
+
+        if ctx.soldier.mode == "investigate":
+            score += self.hearing_tuning.already_investigating_penalty
+
+        if score < self.hearing_tuning.min_reaction_score:
+            return None
+
+        return SoldierDecision(
+            kind=SoldierDecisionKind.INVESTIGATE_SOUND,
+            score=score,
+            pos=sound.pos.copy(),
+        )
+
+    def _score_special(
+        self,
+        ctx: SoldierContext,
+        visible_targets: list[ActorTarget],
+    ) -> SoldierDecision | None:
+        return None

@@ -1,18 +1,14 @@
 from __future__ import annotations
 
 from shared.ai.soldiers.base import BaseSoldierAI
-from shared.ai.soldiers.decisions import SoldierDecisionScorer, SoldierDecisionWeights
+from shared.ai.soldiers.configs.rifleman import RIFLEMAN_DECISION_WEIGHTS, RIFLEMAN_HEARING
+from shared.ai.soldiers.configs.schema import SoldierDecisionWeights, SoldierHearingTuning
+from shared.ai.soldiers.decisions import SoldierDecisionScorer
 
 
 class RiflemanDecisionScorer(SoldierDecisionScorer):
-    weights = SoldierDecisionWeights(
-        zombie_priority=170.0,
-        player_priority=115.0,
-        distance=85.0,
-        low_ammo_reload=260.0,
-        close_threat_retreat=230.0,
-        guard=10.0,
-    )
+    weights = SoldierDecisionWeights(**RIFLEMAN_DECISION_WEIGHTS)
+    hearing_tuning = SoldierHearingTuning(**RIFLEMAN_HEARING)
 
 
 class RiflemanSoldierAI(BaseSoldierAI):

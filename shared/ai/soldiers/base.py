@@ -27,6 +27,7 @@ class BaseSoldierAI:
     def _tick(self, ctx: SoldierContext) -> None:
         soldier = ctx.soldier
         soldier.attack_cooldown = max(0.0, soldier.attack_cooldown - ctx.dt)
+        soldier.grenade_cooldown = max(0.0, soldier.grenade_cooldown - ctx.dt)
 
         if soldier.weapon.reload_left > 0.0:
             soldier.weapon.reload_left = max(0.0, soldier.weapon.reload_left - ctx.dt)
@@ -46,6 +47,15 @@ class BaseSoldierAI:
             self._start_reload(ctx)
             return
 
+        if decision.kind == SoldierDecisionKind.THROW_GRENADE and decision.target:
+            soldier.mode = "combat"
+            soldier.target_id = decision.target.id
+            soldier.target_kind = decision.target.kind
+            soldier.last_known_pos = decision.target.pos.copy()
+            self._try_special(ctx, decision.target, result)
+            self._try_shoot(ctx, decision.target, result)
+            return
+
         if decision.kind == SoldierDecisionKind.RETREAT and decision.target:
             soldier.mode = "retreat"
             soldier.target_id = decision.target.id
@@ -63,7 +73,14 @@ class BaseSoldierAI:
             self._combat(ctx, decision.target, result)
             return
 
-        if soldier.mode == "combat" and soldier.last_known_pos:
+        if decision.kind in {SoldierDecisionKind.INVESTIGATE, SoldierDecisionKind.INVESTIGATE_SOUND} and decision.pos:
+            soldier.mode = "investigate"
+            soldier.last_known_pos = decision.pos.copy()
+            soldier.alertness = min(1.0, soldier.alertness + 0.25)
+            self._investigate(ctx)
+            return
+
+        if soldier.mode in {"combat", "investigate"} and soldier.last_known_pos:
             self._investigate(ctx)
             return
 
@@ -86,6 +103,14 @@ class BaseSoldierAI:
             return
 
         self._try_shoot(ctx, target, result)
+
+    def _try_special(
+        self,
+        ctx: SoldierContext,
+        target: ActorTarget,
+        result: SoldierActionResult,
+    ) -> None:
+        return
 
     def _try_shoot(
         self,
@@ -220,6 +245,7 @@ class BaseSoldierAI:
             return
 
         if soldier.pos.distance_to(soldier.last_known_pos) > 42:
+            soldier.sprinting = True
             ctx.move_toward(soldier, soldier.last_known_pos, ctx.dt, ctx.rng)
             return
 
@@ -228,11 +254,13 @@ class BaseSoldierAI:
         soldier.target_kind = None
         soldier.last_known_pos = None
         soldier.waypoint = None
+        soldier.alertness = max(0.0, soldier.alertness - ctx.dt * 0.35)
 
     def _guard(self, ctx: SoldierContext) -> None:
         soldier = ctx.soldier
         soldier.mode = "guard"
         soldier.sprinting = False
+        soldier.alertness = max(0.0, soldier.alertness - ctx.dt * 0.18)
 
         if soldier.idle_timer > 0.0:
             soldier.idle_timer = max(0.0, soldier.idle_timer - ctx.dt)

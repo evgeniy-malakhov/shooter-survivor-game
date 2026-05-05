@@ -3,6 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from shared.ai.decisions import DecisionScorer, DecisionWeights, ZombieDecision, ZombieDecisionKind, SoundReactionTuning
+from shared.ai.zombies.configs.brute import BRUTE_DECISION_WEIGHTS, BRUTE_SOUND_REACTION
+from shared.ai.zombies.configs.leaper import LEAPER_DECISION_WEIGHTS, LEAPER_SOUND_REACTION, LEAPER_TUNING
+from shared.ai.zombies.configs.runner import RUNNER_DECISION_WEIGHTS, RUNNER_SOUND_REACTION
+from shared.ai.zombies.configs.walker import WALKER_DECISION_WEIGHTS, WALKER_SOUND_REACTION
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,94 +22,24 @@ class LeaperTuning:
     approach_until_distance: float = 540.0
 
 class WalkerDecisionScorer(DecisionScorer):
-    sound_tuning = SoundReactionTuning(
-        min_reaction_score=45,
-        instant_reaction_score=95,
-        reaction_delay_min=0.25,
-        reaction_delay_max=0.65,
-    )
-
-    weights = DecisionWeights(
-        visible_target=100.0,
-        sound_interest=55.0,
-        distance_to_target=35.0,
-        wounded_target=10.0,
-        sprinting_target=8.0,
-        sneaking_target=-18.0,
-        attack=130.0,
-        patrol=12.0,
-        search=35.0,
-        persistence=18.0,
-    )
+    sound_tuning = SoundReactionTuning(**WALKER_SOUND_REACTION)
+    weights = DecisionWeights(**WALKER_DECISION_WEIGHTS)
 
 
 class RunnerDecisionScorer(DecisionScorer):
-    sound_tuning = SoundReactionTuning(
-        min_reaction_score=35,
-        instant_reaction_score=80,
-        reaction_delay_min=0.08,
-        reaction_delay_max=0.28,
-    )
-
-    weights = DecisionWeights(
-        visible_target=115.0,
-        sound_interest=75.0,
-        distance_to_target=65.0,
-        wounded_target=25.0,
-        sprinting_target=22.0,
-        sneaking_target=-10.0,
-        attack=145.0,
-        patrol=6.0,
-        search=45.0,
-        persistence=25.0,
-    )
+    sound_tuning = SoundReactionTuning(**RUNNER_SOUND_REACTION)
+    weights = DecisionWeights(**RUNNER_DECISION_WEIGHTS)
 
 
 class BruteDecisionScorer(DecisionScorer):
-    sound_tuning = SoundReactionTuning(
-        min_reaction_score=60,
-        instant_reaction_score=115,
-        reaction_delay_min=0.45,
-        reaction_delay_max=0.95,
-    )
-
-    weights = DecisionWeights(
-        visible_target=95.0,
-        sound_interest=35.0,
-        distance_to_target=20.0,
-        wounded_target=8.0,
-        sprinting_target=5.0,
-        sneaking_target=-25.0,
-        attack=180.0,
-        patrol=18.0,
-        search=28.0,
-        persistence=12.0,
-    )
+    sound_tuning = SoundReactionTuning(**BRUTE_SOUND_REACTION)
+    weights = DecisionWeights(**BRUTE_DECISION_WEIGHTS)
 
 
 class LeaperDecisionScorer(DecisionScorer):
-    tuning = LeaperTuning()
-
-    sound_tuning = SoundReactionTuning(
-        min_reaction_score=38,
-        instant_reaction_score=78,
-        reaction_delay_min=0.06,
-        reaction_delay_max=0.24,
-    )
-
-    weights = DecisionWeights(
-        visible_target=120.0,
-        sound_interest=65.0,
-        distance_to_target=70.0,
-        wounded_target=20.0,
-        sprinting_target=16.0,
-        sneaking_target=-12.0,
-        attack=40.0,
-        patrol=7.0,
-        search=48.0,
-        persistence=28.0,
-        special=185.0,
-    )
+    tuning = LeaperTuning(**LEAPER_TUNING)
+    sound_tuning = SoundReactionTuning(**LEAPER_SOUND_REACTION)
+    weights = DecisionWeights(**LEAPER_DECISION_WEIGHTS)
 
     def _score_special(self, ctx, visible_decisions):
         zombie = ctx.zombie

@@ -5,12 +5,16 @@ import random
 from dataclasses import fields
 from typing import TYPE_CHECKING
 
-from shared.ai.context import ActorTarget
+from shared.ai.context import ActorTarget, SoundEvent
+from shared.ai.soldiers.configs.heavy_grenadier import HEAVY_GRENADIER_HEARING
+from shared.ai.soldiers.configs.rifleman import RIFLEMAN_HEARING
+from shared.ai.soldiers.configs.schema import SoldierHearingTuning
 from shared.ai.soldiers.context import SoldierContext
 from shared.constants import MAP_HEIGHT, MAP_WIDTH, PLAYER_RADIUS, SOLDIERS, ZOMBIES, WEAPONS
 from shared.models import PlayerState, ProjectileState, SoldierState, Vec2
 from shared.world.world_state import WorldState
 from shared.systems.events.game_events import EmitSoundEvent
+from shared.systems.events.game_events import SpawnGrenadeEvent
 from shared.systems.actors.decision.actor_decision_result import ActorDecisionOutput
 if TYPE_CHECKING:
     from shared.world.world_context import WorldContext
@@ -53,7 +57,13 @@ class SoldierRuntimeService:
             rng=self._rng,
             spec=spec,
             weapon=weapon,
+            sounds=tuple(ctx.spatial.nearby_sounds(
+                soldier.pos,
+                self.soldier_hearing_query_radius(soldier.kind),
+                soldier.floor,
+            )),
             line_blocked=lambda a, b, floor: ctx.geometry.line_blocked(a, b, floor),
+            can_hear=lambda actor: self.can_hear(actor, ctx),
             move_toward=lambda actor, target, delta_time, rng=None: self.move_toward(
                 actor,
                 target,
@@ -86,6 +96,18 @@ class SoldierRuntimeService:
                 radius=float(projectile["radius"]),
                 floor=int(projectile["floor"]),
                 weapon_key=str(projectile["weapon_key"]),
+            )
+
+        for grenade in result.grenades:
+            ctx.events.emit(
+                SpawnGrenadeEvent(
+                    owner_id=str(grenade["owner_id"]),
+                    kind=str(grenade["kind"]),
+                    pos=grenade["pos"],
+                    velocity=grenade["velocity"],
+                    timer=float(grenade["timer"]),
+                    floor=int(grenade["floor"]),
+                )
             )
 
         for sound in result.sounds:
@@ -171,6 +193,44 @@ class SoldierRuntimeService:
             )
 
         return tuple(targets)
+
+    def can_hear(self, soldier: SoldierState, ctx) -> SoundEvent | None:
+        tuning = self.soldier_hearing_tuning(soldier.kind)
+        best: SoundEvent | None = None
+        best_distance = float("inf")
+
+        for sound in ctx.spatial.nearby_sounds(
+            soldier.pos,
+            self.soldier_hearing_query_radius(soldier.kind),
+            soldier.floor,
+        ):
+            if sound.floor != soldier.floor:
+                continue
+
+            distance = soldier.pos.distance_to(sound.pos)
+            hearing_radius = sound.radius * tuning.hearing_multiplier
+
+            if distance > hearing_radius:
+                continue
+
+            if ctx.geometry.line_blocked(soldier.pos, sound.pos, soldier.floor, sound=True):
+                continue
+
+            if distance < best_distance:
+                best = sound
+                best_distance = distance
+
+        return best
+
+    def soldier_hearing_query_radius(self, kind: str) -> float:
+        spec = SOLDIERS[kind]
+        tuning = self.soldier_hearing_tuning(kind)
+        return spec.hearing_range * tuning.hearing_multiplier + tuning.extra_radius
+
+    def soldier_hearing_tuning(self, kind: str) -> SoldierHearingTuning:
+        if kind == "heavy_grenadier":
+            return SoldierHearingTuning(**HEAVY_GRENADIER_HEARING)
+        return SoldierHearingTuning(**RIFLEMAN_HEARING)
 
     def move_toward(
         self,

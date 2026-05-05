@@ -26,22 +26,22 @@ class PlayerCombatService:
         self._rng = rng
 
     def shoot(self, player: PlayerState, ctx: "WorldContext") -> None:
-        quick_item = player.quick_items.get(player.active_slot)
-
-        if quick_item:
-            spec = ITEMS.get(quick_item.key)
-
-            if spec and spec.kind == "grenade":
-                self.throw_grenade_from_quick(player, ctx, player.active_slot)
-                return
-
-            if spec and spec.kind == "mine":
-                self.place_mine_from_quick(player, ctx, player.active_slot)
-                return
-
         weapon = player.active_weapon()
 
         if not weapon:
+            quick_item = player.quick_items.get(player.active_slot)
+
+            if quick_item:
+                spec = ITEMS.get(quick_item.key)
+
+                if spec and spec.kind == "grenade":
+                    self.throw_grenade_from_quick(player, ctx, player.active_slot)
+                    return
+
+                if spec and spec.kind == "mine":
+                    self.place_mine_from_quick(player, ctx, player.active_slot)
+                    return
+
             return
 
         if weapon.reload_left > 0.0 or weapon.cooldown > 0.0 or weapon.ammo_in_mag <= 0:

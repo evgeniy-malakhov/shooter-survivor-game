@@ -185,6 +185,24 @@ SOLDIERS = {
         weapon_key="rifle",
         reload_time=1.9,
     ),
+    "heavy_grenadier": SoldierSpec(
+        health=165,
+        armor=85,
+        speed=118,
+        radius=22,
+        sight_range=760,
+        hearing_range=760,
+        fov_degrees=112,
+        damage=18,
+        fire_range=520,
+        magazine_size=12,
+        fire_cooldown=0.34,
+        accuracy=0.72,
+        loot_table=("pistol", "pistol_ammo", "heavy_grenade"),
+        projectile_speed=980.0,
+        weapon_key="pistol",
+        reload_time=1.25,
+    ),
 }
 
 
