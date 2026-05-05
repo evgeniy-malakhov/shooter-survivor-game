@@ -12,11 +12,21 @@ from shared.concurrency.executor_config import build_executor_config
 from shared.concurrency.process_pool_service import ProcessPoolService
 from shared.concurrency.thread_pool_service import ThreadPoolService
 from shared.difficulty import load_difficulty
-from shared.level import make_buildings
+from shared.maps.registry import DEFAULT_MAP_REGISTRY
+from shared.maps.core.map_runtime import MapRuntime
+from shared.maps.loading.loading_screen_state import LoadingScreenState
+from shared.maps.loading.loading_stage import LoadingStage
 from shared.systems.actors.soldier_runtime_service import SoldierRuntimeService
 from shared.systems.actors.soldier_runtime_system import SoldierRuntimeSystem
 from shared.systems.actors.zombie_runtime_service import ZombieRuntimeService
 from shared.systems.actors.zombie_runtime_system import ZombieRuntimeSystem
+from shared.systems.actors.decision import (
+    ActorDecisionExecutionConfig,
+    ActorDecisionExecutor,
+    ActorDecisionRegistry,
+    ActorSnapshotBuilder,
+)
+from shared.systems.actors.decision.workers import SoldierDecisionWorker, ZombieDecisionWorker
 from shared.systems.bootstrap.map_bootstrap_service import MapBootstrapService
 from shared.systems.commands.command_router import CommandRouter
 from shared.systems.commands.command_router_factory import build_command_router
@@ -72,9 +82,16 @@ def build_world_composition(
     get_time,
     initial_zombies: int,
     max_zombies: int,
+    loading_state: LoadingScreenState | None = None,
 ) -> WorldComposition:
     state = WorldState()
-    state.buildings = make_buildings()
+
+    map_runtime = MapRuntime(DEFAULT_MAP_REGISTRY)
+    map_result = map_runtime.start_map(config.map_id, loading_state)
+    state.map_id = map_result.map_id
+    state.map_width = map_result.width
+    state.map_height = map_result.height
+    state.buildings = map_result.buildings
 
     id_generator = IdGenerator()
 
@@ -145,6 +162,7 @@ def build_world_composition(
         state=state,
         rng=rng,
         geometry=geometry_service,
+        spatial=spatial_service,
     )
 
     weapon_runtime_service = WeaponRuntimeService()
@@ -168,6 +186,22 @@ def build_world_composition(
         zombie_ai_registry=ZOMBIE_AI_REGISTRY,
         difficulty=difficulty,
         pathfinder=zombie_pathfinder,
+    )
+
+    actor_decision_registry = ActorDecisionRegistry()
+    actor_decision_registry.register("zombie", ZombieDecisionWorker())
+    actor_decision_registry.register("soldier", SoldierDecisionWorker())
+
+    actor_snapshot_builder = ActorSnapshotBuilder()
+    actor_decision_executor = ActorDecisionExecutor(
+        actor_decision_registry,
+        ActorDecisionExecutionConfig(
+            sync_actor_limit=config.actor_decision_sync_actor_limit,
+            thread_actor_limit=config.actor_decision_thread_actor_limit,
+            process_actor_limit=config.actor_decision_process_actor_limit,
+            enable_threads=config.actor_decision_enable_threads,
+            enable_processes=config.actor_decision_enable_processes,
+        ),
     )
 
     inventory_service = InventoryService(
@@ -223,6 +257,8 @@ def build_world_composition(
         interactions=interaction_service,
         soldier_runtime=soldier_runtime_service,
         zombie_runtime=zombie_runtime_service,
+        actor_snapshots=actor_snapshot_builder,
+        actor_decisions=actor_decision_executor,
         spatial=spatial_service,
         events=event_buffer,
     )
@@ -237,6 +273,7 @@ def build_world_composition(
         LootSpawnSystem(),
         SoundSystem(),
         ZombieRuntimeSystem(),
+        SpatialIndexSystem(),
         SoldierRuntimeSystem(),
         EventApplySystem(),
     ])
@@ -252,6 +289,9 @@ def build_world_composition(
         initial_zombies=initial_zombies,
         max_zombies=max_zombies,
     )
+
+    if loading_state is not None:
+        loading_state.update(LoadingStage.COMPOSE_WORLD, "World systems ready", 0.98)
 
     return WorldComposition(
         state=state,

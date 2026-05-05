@@ -13,7 +13,8 @@ from shared.constants import (
     MAP_WIDTH,
 )
 from shared.difficulty import load_difficulty
-from shared.level import make_buildings
+from shared.maps.loading.loading_screen_state import LoadingScreenState
+from shared.maps.loading.loading_stage import LoadingStage
 from shared.models import (
     ClientCommand,
     InputCommand,
@@ -69,6 +70,8 @@ class GameWorld:
         zombie_ai_active_radius: float = 1800.0,
         zombie_ai_far_radius: float = 3200.0,
         zombie_ai_batch_size: int = 8,
+        map_id: str = "forest_outpost",
+        loading_state: LoadingScreenState | None = None,
         config: WorldConfig | None = None,
     ) -> None:
         if config is None:
@@ -77,6 +80,7 @@ class GameWorld:
                 initial_zombies=initial_zombies,
                 max_zombies=max_zombies,
                 difficulty_key=difficulty_key,
+                map_id=map_id,
                 zombie_workers=zombie_workers,
                 zombie_ai_decision_rate=zombie_ai_decision_rate,
                 zombie_ai_far_decision_rate=zombie_ai_far_decision_rate,
@@ -86,7 +90,6 @@ class GameWorld:
             )
 
         self.state = WorldState()
-        self.state.buildings = make_buildings()
 
         difficulty = load_difficulty(config.difficulty_key)
 
@@ -125,6 +128,7 @@ class GameWorld:
             get_time=lambda: self.time,
             initial_zombies=self.initial_zombies,
             max_zombies=self.max_zombies,
+            loading_state=loading_state,
         )
 
         self.command_router = composition.command_router
@@ -161,6 +165,8 @@ class GameWorld:
         composition.map_bootstrap.bootstrap()
         EventApplySystem().update(self.state, self.ctx, 0.0)
         self.ctx.spatial.rebuild(self.state)
+        if loading_state is not None:
+            loading_state.update(LoadingStage.READY, "Ready", 1.0)
 
     def close(self) -> None:
         self.ctx.process_pool.close()
@@ -269,8 +275,8 @@ class GameWorld:
         with self._lock:
             return WorldSnapshot(
                 time=self.time,
-                map_width=MAP_WIDTH,
-                map_height=MAP_HEIGHT,
+                map_width=self.state.map_width or MAP_WIDTH,
+                map_height=self.state.map_height or MAP_HEIGHT,
                 players=dict(self.players),
                 zombies=dict(self.zombies),
                 soldiers=dict(self.soldiers),

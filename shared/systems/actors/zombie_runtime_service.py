@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import TYPE_CHECKING
 
 from shared.ai.context import ActorTarget, SoundEvent, ZombieContext
@@ -15,6 +15,7 @@ from shared.models import (
     ZombieState,
 )
 from shared.systems.events.game_events import SpawnProjectileEvent, SpawnPoisonEvent, DamagePlayerEvent, DamageSoldierEvent
+from shared.systems.actors.decision.actor_decision_result import ActorDecisionOutput
 if TYPE_CHECKING:
     from shared.world.world_context import WorldContext
 from shared.world.world_state import WorldState
@@ -50,6 +51,16 @@ class ZombieRuntimeService:
     @property
     def registry(self):
         return self._zombie_ai_registry
+
+    @property
+    def state_time(self) -> float:
+        return self._state.time
+
+    def living_players(self) -> tuple[PlayerState, ...]:
+        return tuple(player for player in self._state.players.values() if player.alive)
+
+    def zombie_spec(self, kind: str):
+        return ZOMBIES[kind]
 
     def targets_near_zombie(self, zombie: ZombieState, ctx) -> tuple[ActorTarget, ...]:
         spec = ZOMBIES[zombie.kind]
@@ -191,11 +202,6 @@ class ZombieRuntimeService:
         return None
 
     def update_local(self, ctx, dt: float) -> None:
-        living_players = tuple(
-            player for player in self._state.players.values()
-            if player.alive
-        )
-
         zombies = list(self._state.zombies.values())
 
         if not zombies:
@@ -211,19 +217,15 @@ class ZombieRuntimeService:
             if zombie_id not in active_ids:
                 self._path_cache.pop(zombie_id, None)
 
-        for zombie in zombies:
-            if zombie.id not in self._state.zombies:
-                continue
+        inputs = ctx.actor_snapshots.build_zombie_inputs(
+            zombies,
+            ctx=ctx,
+            dt=dt,
+            rng=self._rng,
+        )
 
-            result = self.advance_actor(
-                zombie,
-                dt,
-                living_players,
-                self.zombie_rng(zombie.id),
-                ctx,
-            )
-
-            self.apply_result(result, ctx)
+        for output in ctx.actor_decisions.execute(inputs, ctx):
+            self.apply_decision_output(output, ctx)
 
     def zombie_rng(self, zombie_id: str) -> random.Random:
         rng = self._zombie_rngs.get(zombie_id)
@@ -319,6 +321,29 @@ class ZombieRuntimeService:
                     floor=spit.floor,
                 )
             )
+
+    def apply_decision_output(self, output: ActorDecisionOutput, ctx: "WorldContext") -> None:
+        zombie = self._state.zombies.get(output.actor_id)
+
+        if not zombie or output.actor_state is None:
+            return
+
+        updated = ZombieState.from_dict(output.actor_state)
+        self._copy_state(zombie, updated)
+
+        self.apply_result(
+            ZombieRuntimeResult(
+                zombie=zombie,
+                player_hits=output.player_hits,
+                soldier_hits=output.soldier_hits,
+                poison_spits=output.poison_spits,
+            ),
+            ctx,
+        )
+
+    def _copy_state(self, target: ZombieState, source: ZombieState) -> None:
+        for field in fields(ZombieState):
+            setattr(target, field.name, getattr(source, field.name))
 
     def make_context(
         self,

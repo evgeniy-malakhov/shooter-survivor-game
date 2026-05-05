@@ -24,6 +24,9 @@ from shared.ai.context import SoundEvent
 @dataclass(slots=True)
 class WorldState:
     time: float = 0.0
+    map_id: str = "forest_outpost"
+    map_width: int = 1
+    map_height: int = 1
 
     players: dict[str, PlayerState] = field(default_factory=dict)
     zombies: dict[str, ZombieState] = field(default_factory=dict)

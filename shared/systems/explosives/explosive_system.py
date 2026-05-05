@@ -33,7 +33,7 @@ class ExplosiveSystem(WorldSystem):
                 grenade.pos.add(grenade.velocity.scaled(dt))
 
             if grenade.timer <= 0.0 or (
-                spec.contact and (hit_wall or self._grenade_touched_actor(state, grenade))
+                spec.contact and (hit_wall or self._grenade_touched_actor(ctx, grenade))
             ):
                 detonated.append(grenade.id)
 
@@ -71,20 +71,21 @@ class ExplosiveSystem(WorldSystem):
             if mine:
                 self._detonate_mine(state, ctx, mine)
 
-    def _grenade_touched_actor(self, state: WorldState, grenade: GrenadeState) -> bool:
-        for zombie in state.zombies.values():
-            if zombie.floor != grenade.floor:
-                continue
-
+    def _grenade_touched_actor(self, ctx: WorldContext, grenade: GrenadeState) -> bool:
+        zombie_query_radius = grenade.radius + max(spec.radius for spec in ZOMBIES.values())
+        for zombie in ctx.spatial.nearby_zombies(grenade.pos, zombie_query_radius, grenade.floor):
             spec = ZOMBIES[zombie.kind]
 
             if grenade.pos.distance_to(zombie.pos) <= spec.radius + grenade.radius:
                 return True
 
-        for player in state.players.values():
+        for player in ctx.spatial.nearby_players(
+            grenade.pos,
+            PLAYER_RADIUS + grenade.radius,
+            grenade.floor,
+        ):
             if (
                 player.alive
-                and player.floor == grenade.floor
                 and player.pos.distance_to(grenade.pos) <= PLAYER_RADIUS + grenade.radius
             ):
                 return True

@@ -24,7 +24,10 @@ class BruteZombieAI(BaseZombieAI):
             return
 
         damage = max(1, int(round(spec.damage * 1.35 * ctx.difficulty.zombie_damage_multiplier)))
-        result.player_hits.append((target.id, damage))
+        if target.kind == "player":
+            result.player_hits.append((target.id, damage))
+        elif target.kind == "soldier":
+            result.soldier_hits.append((target.id, damage))
 
         # Brute bite rare but hurt.
         zombie.attack_cooldown = 1.35

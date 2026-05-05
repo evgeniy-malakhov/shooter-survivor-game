@@ -72,6 +72,8 @@
   "single.setup.bots": "Боты",
   "single.setup.bot_density": "Плотность ботов",
   "single.setup.start": "Начать игру",
+  "loading.init": "Инициализация",
+  "loading.error": "Загрузка не удалась",
   "state.on": "ВКЛ",
   "state.off": "ВЫКЛ",
   "state.alive": "жив",

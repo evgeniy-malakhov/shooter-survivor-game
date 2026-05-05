@@ -120,10 +120,8 @@ class PlayerCombatService:
 
         reach = PLAYER_RADIUS + 34
 
-        for zombie in list(self._state.zombies.values()):
-            if zombie.floor != player.floor:
-                continue
-
+        query_radius = reach + max(spec.radius for spec in ZOMBIES.values())
+        for zombie in ctx.spatial.nearby_zombies(player.pos, query_radius, player.floor):
             spec = ZOMBIES[zombie.kind]
 
             if player.pos.distance_to(zombie.pos) <= reach + spec.radius:

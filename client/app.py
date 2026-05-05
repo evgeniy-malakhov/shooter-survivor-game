@@ -28,6 +28,8 @@ from shared.difficulty import DIFFICULTY_KEYS, load_difficulty
 from shared.explosives import GRENADE_SPECS, MINE_SPECS, DEFAULT_GRENADE, DEFAULT_MINE
 from shared.items import EQUIPMENT_SLOTS, ITEMS, RECIPES
 from shared.level import tunnel_segments
+from shared.maps import list_available_maps
+from shared.maps.loading import LoadingScreenState, LoadingStage
 from shared.models import BuildingState, ClientCommand, InputCommand, LootState, PlayerState, RectState, Vec2, WorldSnapshot
 from shared.rarities import RARITY_KEYS, rarity_color, rarity_rank, rarity_spec
 from shared.simulation import GameWorld
@@ -134,6 +136,7 @@ class GameApp:
         self.locales = self._load_locales()
         self.icon_mapping = self._load_icon_mapping()
         self.item_images = self._load_item_images()
+        self.loading_poster, self.loading_spinner = self._load_loading_assets()
         self._icon_cache: dict[tuple[str, int, int], pygame.Surface] = {}
         self.damage_flash = 0.0
         self._last_local_health: float | None = None
@@ -169,6 +172,12 @@ class GameApp:
         self.name_input = self.player_name
         self.world: GameWorld | None = None
         self.local_player_id: str | None = None
+        self.loading_state: LoadingScreenState | None = None
+        self.loading_thread: threading.Thread | None = None
+        self.loading_error: str | None = None
+        self._loaded_world: GameWorld | None = None
+        self._loaded_player_id: str | None = None
+        self._loading_started_at = 0.0
         self.online = OnlineClient()
         self.inventory_open = False
         self.backpack_open = False
@@ -216,6 +225,12 @@ class GameApp:
             self.bot_density = "normal"
         self.single_bots_enabled = bool(saved_settings.get("single_bots_enabled", True))
         self.single_map_key = str(saved_settings.get("single_map", "city"))
+        self.single_map_manifests = list_available_maps()
+        self.single_map_options = tuple(manifest.id for manifest in self.single_map_manifests) or MAP_OPTIONS
+        self.single_map_titles = {manifest.id: manifest.title for manifest in self.single_map_manifests}
+        self.single_map_descriptions = {manifest.id: manifest.description for manifest in self.single_map_manifests}
+        if self.single_map_key not in self.single_map_options:
+            self.single_map_key = self.single_map_options[0]
         self.difficulty_key = str(saved_settings.get("single_difficulty", "medium"))
         self.difficulty_options = list(DIFFICULTY_KEYS)
         if self.difficulty_key not in self.difficulty_options:
@@ -358,6 +373,24 @@ class GameApp:
         image = pygame.image.load(str(path))
         return image.convert_alpha()
 
+    def _load_loading_assets(self) -> tuple[pygame.Surface | None, pygame.Surface | None]:
+        poster = self._try_load_image(
+            ROOT / "images" / "load" / "load.png",
+            ROOT / "images" / "screen" / "load.png",
+        )
+        spinner = self._try_load_image(ROOT / "images" / "screen" / "loader.gif")
+        return poster, spinner
+
+    def _try_load_image(self, *paths: Path) -> pygame.Surface | None:
+        for path in paths:
+            if not path.exists():
+                continue
+            try:
+                return pygame.image.load(str(path)).convert_alpha()
+            except pygame.error:
+                continue
+        return None
+
     def item_title(self, key: str) -> str:
         if key in WEAPONS:
             return self.weapon_title(key)
@@ -477,6 +510,8 @@ class GameApp:
                 self._back_to_menu()
             elif self.state in {"options", "single_setup"}:
                 self.state = "menu"
+            elif self.state == "single_loading" and self.loading_error:
+                self.state = "single_setup"
             elif self.state in {"single", "online_game"}:
                 self.settings_open = True
             return
@@ -822,6 +857,7 @@ class GameApp:
 
     def _update(self, dt: float) -> None:
         self._sync_menu_music()
+        self._finish_single_loading_if_ready()
         target_dropdown = 1.0 if self.single_map_dropdown_open and self.state == "single_setup" else 0.0
         self.single_map_dropdown_alpha += (target_dropdown - self.single_map_dropdown_alpha) * min(1.0, dt * 8.0)
         if self.state == "servers" and time.time() - self._last_ping_refresh > 4.0:
@@ -849,7 +885,7 @@ class GameApp:
         self._update_damage_feedback(dt)
 
     def _sync_menu_music(self) -> None:
-        self.audio.set_menu_music_active(self.state in {"menu", "options", "single_setup", "servers"})
+        self.audio.set_menu_music_active(self.state in {"menu", "options", "single_setup", "single_loading", "servers"})
 
     def _maybe_play_empty_weapon_sound(self, player: PlayerState) -> None:
         weapon = player.active_weapon()
@@ -1274,6 +1310,37 @@ class GameApp:
         self.online.close()
         if self.world:
             self.world.close()
+        self.world = None
+        self.local_player_id = None
+        self._loaded_world = None
+        self._loaded_player_id = None
+        self.loading_error = None
+        self.loading_state = LoadingScreenState(self.single_map_key)
+        self._loading_started_at = time.time()
+        self.state = "single_loading"
+        self._save_client_settings()
+
+        def worker() -> None:
+            try:
+                world, player_id = self._build_single_player_world(self.loading_state)
+                self._loaded_world = world
+                self._loaded_player_id = player_id
+            except Exception as exc:
+                self.loading_error = str(exc)
+                if self.loading_state is not None:
+                    self.loading_state.fail(str(exc))
+
+        self.loading_thread = threading.Thread(
+            target=worker,
+            name="single-map-loader",
+            daemon=True,
+        )
+        self.loading_thread.start()
+
+    def _build_single_player_world(
+        self,
+        loading_state: LoadingScreenState | None,
+    ) -> tuple[GameWorld, str]:
         difficulty = load_difficulty(self.difficulty_key)
         density = self.bot_density_profiles[self.bot_density]
         if self.single_bots_enabled:
@@ -1282,15 +1349,35 @@ class GameApp:
         else:
             initial_zombies = 0
             max_zombies = 0
-        self.world = GameWorld(
+        world = GameWorld(
             seed=int(time.time()),
             initial_zombies=initial_zombies,
             max_zombies=max_zombies,
             difficulty_key=self.difficulty_key,
             zombie_workers=0,
+            map_id=self.single_map_key,
+            loading_state=loading_state,
         )
-        player = self.world.add_player(self.player_name, "local")
-        self.local_player_id = player.id
+        player = world.add_player(self.player_name, "local")
+        return world, player.id
+
+    def _finish_single_loading_if_ready(self) -> None:
+        if self.state != "single_loading":
+            return
+
+        thread_done = self.loading_thread is not None and not self.loading_thread.is_alive()
+        ready = self.loading_state and self.loading_state.snapshot().stage == LoadingStage.READY
+
+        if self.loading_error:
+            return
+
+        if not thread_done or not ready or self._loaded_world is None or self._loaded_player_id is None:
+            return
+
+        self.world = self._loaded_world
+        self.local_player_id = self._loaded_player_id
+        self._loaded_world = None
+        self._loaded_player_id = None
         self.inventory_open = False
         self.backpack_open = False
         self.settings_open = False
@@ -1298,7 +1385,6 @@ class GameApp:
         self.weapon_custom_open = False
         self._reset_death_effect_tracking()
         self.state = "single"
-        self._save_client_settings()
 
     def _show_servers(self) -> None:
         self.state = "servers"
@@ -1431,6 +1517,8 @@ class GameApp:
             self._draw_menu()
         elif self.state == "single_setup":
             self._draw_single_setup()
+        elif self.state == "single_loading":
+            self._draw_loading_screen()
         elif self.state == "options":
             self._draw_options_menu()
         elif self.state == "servers":
@@ -1514,7 +1602,10 @@ class GameApp:
         self._draw_text_fit(self.tr("single.setup.caption"), pygame.Rect(panel.x + 28, panel.y + 76, panel.w - 56, 24), MUTED, self.small, center=True)
         mouse = self._mouse_pos()
         rows = [
-            (self.tr("single.setup.map"), self.single_map_key.upper()),
+            (
+                self.tr("single.setup.map"),
+                self.single_map_titles.get(self.single_map_key, self.single_map_key.replace("_", " ").title()),
+            ),
             (self.tr("single.setup.difficulty"), self.tr(f"difficulty.{self.difficulty_key}")),
             (self.tr("single.setup.bots"), self.tr("state.on") if self.single_bots_enabled else self.tr("state.off")),
             (self.tr("single.setup.bot_density"), self.tr(f"density.{self.bot_density}")),
@@ -1554,24 +1645,104 @@ class GameApp:
         if self.single_map_dropdown_alpha <= 0.01:
             return
         row = pygame.Rect(panel.x + 56, panel.y + 130, panel.w - 112, 50)
-        popup = pygame.Rect(row.x, row.bottom + 6, row.w, 120)
+        options = list(self.single_map_options)
+        popup = pygame.Rect(row.x, row.bottom + 6, row.w, max(58, 20 + len(options) * 36))
         surface = pygame.Surface(popup.size, pygame.SRCALPHA)
         alpha = int(220 * self.single_map_dropdown_alpha)
         pygame.draw.rect(surface, (14, 20, 32, alpha), surface.get_rect(), border_radius=10)
         pygame.draw.rect(surface, (98, 176, 255, int(180 * self.single_map_dropdown_alpha)), surface.get_rect(), 2, border_radius=10)
         self.screen.blit(surface, popup)
-        options = list(MAP_OPTIONS)
         for index, option in enumerate(options):
             item = pygame.Rect(popup.x + 10, popup.y + 10 + index * 36, popup.w - 30, 30)
             hovered = item.collidepoint(self._mouse_pos())
             pygame.draw.rect(self.screen, PANEL_2 if hovered else BG, item, border_radius=7)
             pygame.draw.rect(self.screen, CYAN if option == self.single_map_key else (64, 84, 116), item, 1, border_radius=7)
-            self._draw_text_fit(option.upper(), item.inflate(-10, -6), CYAN if option == self.single_map_key else TEXT, self.font)
+            title = self.single_map_titles.get(option, option.replace("_", " ").title())
+            self._draw_text_fit(title.upper(), item.inflate(-10, -6), CYAN if option == self.single_map_key else TEXT, self.font)
         track = pygame.Rect(popup.right - 14, popup.y + 10, 6, popup.h - 20)
         pygame.draw.rect(self.screen, (18, 25, 40), track, border_radius=4)
         pygame.draw.rect(self.screen, (88, 160, 224), track, 1, border_radius=4)
         knob = pygame.Rect(track.x + 1, track.y + 1, track.w - 2, max(18, track.h - 2))
         pygame.draw.rect(self.screen, CYAN, knob, border_radius=4)
+
+    def _draw_loading_screen(self) -> None:
+        self.screen.fill(BG)
+        self._draw_loading_poster()
+
+        snapshot = self.loading_state.snapshot() if self.loading_state else None
+        elapsed = max(0.0, time.time() - self._loading_started_at)
+        base_progress = snapshot.progress if snapshot else 0.0
+        progress = max(base_progress, min(0.94, 0.08 + elapsed * 0.18))
+        if snapshot and snapshot.stage == LoadingStage.READY:
+            progress = 1.0
+
+        overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        overlay.fill((4, 8, 18, 118))
+        self.screen.blit(overlay, (0, 0))
+
+        pulse = (math.sin(time.time() * 3.2) + 1.0) * 0.5
+        panel = pygame.Rect((SCREEN_W - 660) // 2, SCREEN_H - 245, 660, 150)
+        glass = pygame.Surface(panel.size, pygame.SRCALPHA)
+        pygame.draw.rect(glass, (10, 16, 30, 202), glass.get_rect(), border_radius=12)
+        pygame.draw.rect(glass, (96, 206, 255, int(120 + pulse * 70)), glass.get_rect(), 2, border_radius=12)
+        self.screen.blit(glass, panel)
+
+        title = self.single_map_titles.get(self.single_map_key, self.single_map_key.replace("_", " ").title())
+        label = snapshot.label if snapshot else self.tr("loading.init")
+        if self.loading_error:
+            label = self.loading_error
+
+        self._draw_text_fit(title, pygame.Rect(panel.x + 112, panel.y + 24, panel.w - 164, 34), TEXT, self.mid)
+        self._draw_text_fit(
+            label,
+            pygame.Rect(panel.x + 112, panel.y + 62, panel.w - 164, 24),
+            RED if self.loading_error else MUTED,
+            self.font,
+        )
+
+        spinner_rect = pygame.Rect(panel.x + 36, panel.y + 34, 54, 54)
+        self._draw_loading_spinner(spinner_rect)
+
+        bar = pygame.Rect(panel.x + 36, panel.bottom - 42, panel.w - 72, 16)
+        pygame.draw.rect(self.screen, (8, 13, 24), bar, border_radius=8)
+        fill = pygame.Rect(bar.x, bar.y, int(bar.w * max(0.0, min(1.0, progress))), bar.h)
+        pygame.draw.rect(self.screen, CYAN if not self.loading_error else RED, fill, border_radius=8)
+        pygame.draw.rect(self.screen, (144, 228, 255), bar, 1, border_radius=8)
+        percent = f"{int(max(0.0, min(1.0, progress)) * 100):d}%"
+        self._draw_text_fit(percent, pygame.Rect(bar.right - 70, bar.y - 32, 70, 22), TEXT, self.hud_title_font, center=True)
+
+    def _draw_loading_poster(self) -> None:
+        if not self.loading_poster:
+            self._draw_neon_background()
+            return
+
+        source = self.loading_poster
+        scale = max(SCREEN_W / source.get_width(), SCREEN_H / source.get_height())
+        size = (max(1, int(source.get_width() * scale)), max(1, int(source.get_height() * scale)))
+        poster = pygame.transform.smoothscale(source, size)
+        self.screen.blit(poster, ((SCREEN_W - size[0]) // 2, (SCREEN_H - size[1]) // 2))
+
+    def _draw_loading_spinner(self, rect: pygame.Rect) -> None:
+        if self.loading_spinner:
+            angle = -(time.time() * 180.0) % 360.0
+            source = pygame.transform.smoothscale(self.loading_spinner, rect.size)
+            rotated = pygame.transform.rotozoom(source, angle, 1.0)
+            self.screen.blit(rotated, rotated.get_rect(center=rect.center))
+            return
+
+        angle = time.time() * math.tau
+        pygame.draw.circle(self.screen, (22, 32, 52), rect.center, rect.w // 2, 4)
+        for index in range(8):
+            a = angle + index * math.tau / 8.0
+            dot = pygame.Surface((8, 8), pygame.SRCALPHA)
+            pygame.draw.circle(dot, (76, 225, 255, min(255, 80 + index * 18)), (4, 4), 4)
+            self.screen.blit(
+                dot,
+                (
+                    rect.centerx + math.cos(a) * 22 - 4,
+                    rect.centery + math.sin(a) * 22 - 4,
+                ),
+            )
 
     def _draw_servers(self) -> None:
         self.screen.fill(BG)
@@ -3738,11 +3909,14 @@ class GameApp:
             self.single_map_dropdown_open = not self.single_map_dropdown_open
             return
         if self.single_map_dropdown_open:
-            popup = pygame.Rect(rows[0].x, rows[0].bottom + 6, rows[0].w, 120)
-            item = pygame.Rect(popup.x + 10, popup.y + 10, popup.w - 30, 30)
-            if item.collidepoint(pos):
-                self.single_map_key = MAP_OPTIONS[0]
-                self._save_client_settings()
+            options = list(self.single_map_options)
+            popup = pygame.Rect(rows[0].x, rows[0].bottom + 6, rows[0].w, max(58, 20 + len(options) * 36))
+            for index, option in enumerate(options):
+                item = pygame.Rect(popup.x + 10, popup.y + 10 + index * 36, popup.w - 30, 30)
+                if item.collidepoint(pos):
+                    self.single_map_key = option
+                    self._save_client_settings()
+                    break
             self.single_map_dropdown_open = False
             if popup.collidepoint(pos):
                 return

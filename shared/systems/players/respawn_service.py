@@ -14,10 +14,12 @@ class RespawnService:
         state: WorldState,
         rng: random.Random,
         geometry,
+        spatial=None,
     ) -> None:
         self._state = state
         self._rng = rng
         self._geometry = geometry
+        self._spatial = spatial
 
     def respawn(self, player: PlayerState) -> None:
         pos, floor, building_id = self._safe_respawn()
@@ -72,10 +74,16 @@ class RespawnService:
         return self._random_open_pos(centered=True), 0, None
 
     def _respawn_is_safe(self, pos: Vec2, floor: int) -> bool:
-        for zombie in self._state.zombies.values():
-            if zombie.floor != floor:
-                continue
+        if self._spatial is None:
+            zombies = self._state.zombies.values()
+        else:
+            query_radius = max(
+                760.0,
+                max(spec.sight_range + 140.0 for spec in ZOMBIES.values()),
+            )
+            zombies = self._spatial.nearby_zombies(pos, query_radius, floor)
 
+        for zombie in zombies:
             spec = ZOMBIES[zombie.kind]
             distance = zombie.pos.distance_to(pos)
 

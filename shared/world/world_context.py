@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import random
 import threading
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 from dataclasses import dataclass
 
 from shared.backpack_config import BackpackConfig
@@ -34,6 +34,10 @@ from shared.systems.players.player_status_service import PlayerStatusService
 from shared.systems.spatial.spatial_index_service import SpatialIndexService
 
 from shared.systems.events.event_buffer import EventBuffer
+
+if TYPE_CHECKING:
+    from shared.systems.actors.decision.actor_decision_executor import ActorDecisionExecutor
+    from shared.systems.actors.decision.actor_snapshot_builder import ActorSnapshotBuilder
 
 
 @dataclass(slots=True)
@@ -71,6 +75,8 @@ class WorldContext:
     interactions: InteractionService
     soldier_runtime: SoldierRuntimeService
     zombie_runtime: ZombieRuntimeService
+    actor_snapshots: ActorSnapshotBuilder
+    actor_decisions: ActorDecisionExecutor
 
     events: EventBuffer
     spatial: SpatialIndexService

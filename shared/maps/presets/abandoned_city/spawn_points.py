@@ -1,0 +1,1 @@
+from shared.maps.presets.forest_outpost.spawn_points import FOREST_OUTPOST_SPAWN_POINTS as ABANDONED_CITY_SPAWN_POINTS

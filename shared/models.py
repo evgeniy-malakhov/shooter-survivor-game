@@ -481,6 +481,12 @@ class SoldierState:
             "mode": self.mode,
             "guard_point": self.guard_point.to_dict() if self.guard_point else None,
             "waypoint": self.waypoint.to_dict() if self.waypoint else None,
+            "target_id": self.target_id,
+            "target_kind": self.target_kind,
+            "last_known_pos": self.last_known_pos.to_dict() if self.last_known_pos else None,
+            "attack_cooldown": round(self.attack_cooldown, 3),
+            "idle_timer": round(self.idle_timer, 3),
+            "alertness": round(self.alertness, 3),
         }
 
     @classmethod
@@ -507,6 +513,12 @@ class SoldierState:
             mode=str(data.get("mode", "guard")),
             guard_point=Vec2.from_dict(data["guard_point"]) if data.get("guard_point") else None,
             waypoint=Vec2.from_dict(data["waypoint"]) if data.get("waypoint") else None,
+            target_id=data.get("target_id"),
+            target_kind=data.get("target_kind"),
+            last_known_pos=Vec2.from_dict(data["last_known_pos"]) if data.get("last_known_pos") else None,
+            attack_cooldown=float(data.get("attack_cooldown", 0.0)),
+            idle_timer=float(data.get("idle_timer", 0.0)),
+            alertness=float(data.get("alertness", 0.0)),
         )
 
 

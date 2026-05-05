@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import random
+from dataclasses import fields
 from typing import TYPE_CHECKING
 
 from shared.ai.context import ActorTarget
@@ -10,6 +11,7 @@ from shared.constants import MAP_HEIGHT, MAP_WIDTH, PLAYER_RADIUS, SOLDIERS, ZOM
 from shared.models import PlayerState, ProjectileState, SoldierState, Vec2
 from shared.world.world_state import WorldState
 from shared.systems.events.game_events import EmitSoundEvent
+from shared.systems.actors.decision.actor_decision_result import ActorDecisionOutput
 if TYPE_CHECKING:
     from shared.world.world_context import WorldContext
 
@@ -29,6 +31,10 @@ class SoldierRuntimeService:
     @property
     def registry(self):
         return self._soldier_ai_registry
+
+    @property
+    def state_time(self) -> float:
+        return self._state.time
 
     def make_context(
         self,
@@ -94,6 +100,20 @@ class SoldierRuntimeService:
                     intensity=float(sound["intensity"]),
                 )
             )
+
+    def apply_decision_output(self, output: ActorDecisionOutput, ctx: "WorldContext") -> None:
+        soldier = self._state.soldiers.get(output.actor_id)
+
+        if not soldier or output.actor_state is None:
+            return
+
+        updated = SoldierState.from_dict(output.actor_state)
+        self._copy_state(soldier, updated)
+        self.apply_result(soldier, output, ctx)
+
+    def _copy_state(self, target: SoldierState, source: SoldierState) -> None:
+        for field in fields(SoldierState):
+            setattr(target, field.name, getattr(source, field.name))
 
     def targets_near_soldier(self, soldier: SoldierState, ctx) -> tuple[ActorTarget, ...]:
         spec = SOLDIERS[soldier.kind]

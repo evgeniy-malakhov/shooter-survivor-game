@@ -72,6 +72,8 @@
   "single.setup.bots": "Bots",
   "single.setup.bot_density": "Bot density",
   "single.setup.start": "Start Game",
+  "loading.init": "Initializing",
+  "loading.error": "Loading failed",
   "state.on": "ON",
   "state.off": "OFF",
   "state.alive": "alive",
