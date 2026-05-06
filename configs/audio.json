@@ -5,6 +5,29 @@
   "shot_full_volume_distance": 220.0,
   "different_floor_volume_multiplier": 0.28,
   "min_spatial_volume": 0.02,
+  "action_sounds": {
+    "grenade_throw": {
+      "key": "sound-of-falling-granade",
+      "hearing_distance": 1450.0,
+      "full_volume_distance": 160.0,
+      "echo_delay": 0.08,
+      "echo_volume": 0.18
+    },
+    "grenade_explosion": {
+      "key": "explode",
+      "hearing_distance": 2600.0,
+      "full_volume_distance": 320.0,
+      "echo_delay": 0.16,
+      "echo_volume": 0.34
+    },
+    "mine_explosion": {
+      "key": "explode",
+      "hearing_distance": 2300.0,
+      "full_volume_distance": 280.0,
+      "echo_delay": 0.14,
+      "echo_volume": 0.3
+    }
+  },
   "weapon_sounds": {
     "pistol": {
       "shot": "pistol",

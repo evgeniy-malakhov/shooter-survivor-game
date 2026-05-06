@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -63,10 +64,29 @@ class AudioManager:
         self._menu_active = active
         self._post(AudioCommand("menu_active", active))
 
-    def play_action_sound(self, sound_key: str, *, volume: float = 1.0, pan: float = 0.0) -> None:
+    def play_action_sound(
+        self,
+        sound_key: str,
+        *,
+        volume: float = 1.0,
+        pan: float = 0.0,
+        echo_delay: float = 0.0,
+        echo_volume: float = 0.0,
+    ) -> None:
         if not sound_key:
             return
-        self._post(AudioCommand("play_action", {"key": sound_key, "volume": _clamp_volume(volume), "pan": max(-1.0, min(1.0, pan))}))
+        self._post(
+            AudioCommand(
+                "play_action",
+                {
+                    "key": sound_key,
+                    "volume": _clamp_volume(volume),
+                    "pan": max(-1.0, min(1.0, pan)),
+                    "echo_delay": max(0.0, float(echo_delay)),
+                    "echo_volume": _clamp_volume(echo_volume),
+                },
+            )
+        )
 
     def close(self) -> None:
         if self._closed.is_set():
@@ -89,6 +109,7 @@ class AudioManager:
         music = self._music_volume
         effects = self._effects_volume
         menu_active = self._menu_active
+        pending_echoes: list[tuple[float, str, float, float]] = []
         try:
             if not pygame.mixer.get_init():
                 pygame.mixer.init()
@@ -114,16 +135,14 @@ class AudioManager:
                 except pygame.error:
                     continue
 
-        def play_action(payload: dict[str, Any]) -> None:
+        def play_sound_key(sound_key: str, base_volume: float, pan: float) -> None:
             if not initialized:
                 return
-            sound = action_sounds.get(str(payload.get("key", "")))
+            sound = action_sounds.get(sound_key)
             if not sound:
                 return
-            base_volume = _clamp_volume(float(payload.get("volume", 1.0))) * master * effects
             if base_volume <= 0.0:
                 return
-            pan = max(-1.0, min(1.0, float(payload.get("pan", 0.0))))
             left = base_volume * (1.0 - max(0.0, pan) * 0.72)
             right = base_volume * (1.0 + min(0.0, pan) * 0.72)
             try:
@@ -132,6 +151,28 @@ class AudioManager:
                     channel.set_volume(_clamp_volume(left), _clamp_volume(right))
             except pygame.error:
                 pass
+
+        def play_action(payload: dict[str, Any]) -> None:
+            sound_key = str(payload.get("key", ""))
+            base_volume = _clamp_volume(float(payload.get("volume", 1.0))) * master * effects
+            pan = max(-1.0, min(1.0, float(payload.get("pan", 0.0))))
+            play_sound_key(sound_key, base_volume, pan)
+
+            echo_delay = max(0.0, float(payload.get("echo_delay", 0.0)))
+            echo_volume = _clamp_volume(float(payload.get("echo_volume", 0.0)))
+            if echo_delay > 0.0 and echo_volume > 0.0 and base_volume > 0.0:
+                pending_echoes.append((time.monotonic() + echo_delay, sound_key, base_volume * echo_volume, pan * 0.72))
+
+        def play_due_echoes() -> None:
+            if not pending_echoes:
+                return
+            now = time.monotonic()
+            due = [echo for echo in pending_echoes if echo[0] <= now]
+            if not due:
+                return
+            pending_echoes[:] = [echo for echo in pending_echoes if echo[0] > now]
+            for _, sound_key, volume, pan in due:
+                play_sound_key(sound_key, volume, pan)
 
         def play_menu_music() -> None:
             nonlocal music_loaded
@@ -157,9 +198,11 @@ class AudioManager:
         load_action_sounds()
 
         while not self._closed.is_set():
+            play_due_echoes()
             try:
-                command = self._commands.get(timeout=0.25)
+                command = self._commands.get(timeout=0.05 if pending_echoes else 0.25)
             except queue.Empty:
+                play_due_echoes()
                 if menu_active and initialized and not pygame.mixer.music.get_busy():
                     play_menu_music()
                 continue

@@ -48,29 +48,37 @@ class PlayerCombatService:
             return
 
         spec = WEAPONS[weapon.key]
-        angle = player.angle + self._rng.uniform(
-            -ctx.weapons.spread(weapon),
-            ctx.weapons.spread(weapon),
-        )
+        pellet_count = max(1, int(spec.pellets))
+        spread = ctx.weapons.spread(weapon)
+        damage = ctx.weapons.damage(weapon, ctx.difficulty)
+        projectile_life = ctx.weapons.projectile_life(spec.projectile_speed)
 
-        direction = Vec2(math.cos(angle), math.sin(angle))
-        #projectile_id = ctx.ids.next("shot")
+        for pellet_index in range(pellet_count):
+            pellet_spread = 0.0
+            if pellet_count > 1:
+                center_offset = (pellet_index - (pellet_count - 1) * 0.5) / max(1.0, pellet_count - 1)
+                pellet_spread = center_offset * spread + self._rng.uniform(-spread * 0.28, spread * 0.28)
+            else:
+                pellet_spread = self._rng.uniform(-spread, spread)
 
-        ctx.events.emit(
-            SpawnProjectileEvent(
-                owner_id=player.id,
-                pos=Vec2(
-                    player.pos.x + direction.x * (PLAYER_RADIUS + 8),
-                    player.pos.y + direction.y * (PLAYER_RADIUS + 8),
-                ),
-                velocity=direction.scaled(spec.projectile_speed),
-                damage=spec.damage,
-                life=ctx.weapons.projectile_life(spec.projectile_speed),
-                radius=spec.projectile_radius,
-                floor=player.floor,
-                weapon_key=weapon.key,
+            angle = player.angle + pellet_spread
+            direction = Vec2(math.cos(angle), math.sin(angle))
+
+            ctx.events.emit(
+                SpawnProjectileEvent(
+                    owner_id=player.id,
+                    pos=Vec2(
+                        player.pos.x + direction.x * (PLAYER_RADIUS + 8),
+                        player.pos.y + direction.y * (PLAYER_RADIUS + 8),
+                    ),
+                    velocity=direction.scaled(spec.projectile_speed),
+                    damage=damage,
+                    life=projectile_life,
+                    radius=spec.projectile_radius,
+                    floor=player.floor,
+                    weapon_key=weapon.key,
+                )
             )
-        )
 
         # self._state.projectiles[projectile_id] = ProjectileState(
         #     id=projectile_id,
@@ -94,7 +102,7 @@ class PlayerCombatService:
             EmitSoundEvent(
                 pos=player.pos.copy(),
                 floor=player.floor,
-                radius=SHOT_NOISE,
+                radius=ctx.weapons.shot_noise_radius(weapon, SHOT_NOISE),
                 source_player_id=player.id,
                 kind="shot",
                 intensity=1.0,
@@ -234,6 +242,16 @@ class PlayerCombatService:
                 velocity=velocity,
                 timer=grenade_spec.timer,
                 floor=player.floor,
+            )
+        )
+        ctx.events.emit(
+            EmitSoundEvent(
+                pos=start.copy(),
+                floor=player.floor,
+                radius=max(420.0, grenade_spec.blast_radius * 2.8),
+                source_player_id=player.id,
+                kind="grenade_throw",
+                intensity=0.62,
             )
         )
 

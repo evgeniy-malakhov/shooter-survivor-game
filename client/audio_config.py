@@ -18,6 +18,15 @@ class WeaponSoundSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class ActionSoundSpec:
+    key: str
+    hearing_distance: float
+    full_volume_distance: float
+    echo_delay: float = 0.0
+    echo_volume: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
 class AudioTuning:
     menu_music_path: Path
     actions_dir: Path
@@ -26,6 +35,7 @@ class AudioTuning:
     different_floor_volume_multiplier: float
     min_spatial_volume: float
     weapon_sounds: dict[str, WeaponSoundSpec]
+    action_sounds: dict[str, ActionSoundSpec]
 
 
 DEFAULT_WEAPON_SOUNDS = {
@@ -33,6 +43,30 @@ DEFAULT_WEAPON_SOUNDS = {
     "rifle": {"shot": "rifle", "reload": "rifle_reload", "empty": "empty"},
     "shotgun": {"shot": "shotgun", "reload": "reload", "empty": "empty"},
     "smg": {"shot": "smg", "reload": "reload", "empty": "empty"},
+}
+
+DEFAULT_ACTION_SOUNDS = {
+    "grenade_throw": {
+        "key": "sound-of-falling-granade",
+        "hearing_distance": 1450.0,
+        "full_volume_distance": 160.0,
+        "echo_delay": 0.08,
+        "echo_volume": 0.18,
+    },
+    "grenade_explosion": {
+        "key": "explode",
+        "hearing_distance": 2600.0,
+        "full_volume_distance": 320.0,
+        "echo_delay": 0.16,
+        "echo_volume": 0.34,
+    },
+    "mine_explosion": {
+        "key": "explode",
+        "hearing_distance": 2300.0,
+        "full_volume_distance": 280.0,
+        "echo_delay": 0.14,
+        "echo_volume": 0.3,
+    },
 }
 
 
@@ -60,6 +94,22 @@ def _default_tuning(data: dict[str, Any]) -> AudioTuning:
             reload=str(spec.get("reload", fallback["reload"])),
             empty=str(spec.get("empty", fallback["empty"])),
         )
+
+    action_raw = data.get("action_sounds", DEFAULT_ACTION_SOUNDS)
+    action_sounds: dict[str, ActionSoundSpec] = {}
+    action_source = action_raw if isinstance(action_raw, dict) else DEFAULT_ACTION_SOUNDS
+    for action_key, spec_raw in action_source.items():
+        action_name = str(action_key)
+        spec = spec_raw if isinstance(spec_raw, dict) else {}
+        fallback = DEFAULT_ACTION_SOUNDS.get(action_name, {"key": action_name})
+        action_sounds[action_name] = ActionSoundSpec(
+            key=str(spec.get("key", fallback.get("key", action_name))),
+            hearing_distance=_float(spec, "hearing_distance", float(fallback.get("hearing_distance", 1900.0)), minimum=120.0),
+            full_volume_distance=_float(spec, "full_volume_distance", float(fallback.get("full_volume_distance", 220.0)), minimum=0.0),
+            echo_delay=_float(spec, "echo_delay", float(fallback.get("echo_delay", 0.0)), minimum=0.0),
+            echo_volume=_float(spec, "echo_volume", float(fallback.get("echo_volume", 0.0)), minimum=0.0),
+        )
+
     return AudioTuning(
         menu_music_path=_path(data.get("menu_music", "assets/menu/AtriumCarceri-Reunion.mp3")),
         actions_dir=_path(data.get("actions_dir", "assets/actions")),
@@ -68,6 +118,7 @@ def _default_tuning(data: dict[str, Any]) -> AudioTuning:
         different_floor_volume_multiplier=_float(data, "different_floor_volume_multiplier", 0.28, minimum=0.0),
         min_spatial_volume=_float(data, "min_spatial_volume", 0.02, minimum=0.0),
         weapon_sounds=weapon_sounds,
+        action_sounds=action_sounds,
     )
 
 

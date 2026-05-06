@@ -4,7 +4,7 @@ import math
 
 from shared.constants import WEAPONS
 from shared.models import PlayerState, WeaponRuntime
-from shared.rarities import rarity_rank
+from shared.rarities import rarity_rank, rarity_spec
 from shared.weapon_modules import WEAPON_MODULES
 
 
@@ -73,6 +73,25 @@ class WeaponRuntimeService:
             rate *= 1.0 + max(0.0, bonus)
 
         return max(0.1, rate)
+
+    def damage(self, weapon: WeaponRuntime, difficulty=None) -> int:
+        spec = WEAPONS[weapon.key]
+        multiplier = rarity_spec(weapon.rarity).weapon_damage_multiplier
+
+        if difficulty is not None:
+            multiplier *= float(getattr(difficulty, "weapon_damage_multiplier", 1.0))
+            weapon_multipliers = getattr(difficulty, "weapon_damage_multipliers", {})
+            multiplier *= float(weapon_multipliers.get(weapon.key, 1.0))
+
+        return max(1, int(round(spec.damage * multiplier)))
+
+    def noise_multiplier(self, weapon: WeaponRuntime) -> float:
+        module_key = weapon.modules.get("utility") or ""
+        module = WEAPON_MODULES.get(module_key)
+        return module.noise_multiplier if module else 1.0
+
+    def shot_noise_radius(self, weapon: WeaponRuntime, base_radius: float) -> float:
+        return max(0.0, base_radius * self.noise_multiplier(weapon))
 
     def toggle_utility(self, player: PlayerState) -> bool:
         weapon = player.active_weapon()

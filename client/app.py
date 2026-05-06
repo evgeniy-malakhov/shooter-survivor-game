@@ -151,6 +151,8 @@ class GameApp:
         self._prev_player_death_state: dict[str, dict[str, object]] = {}
         self._prev_projectile_audio_state: dict[str, dict[str, object]] = {}
         self._played_projectile_sounds: set[str] = set()
+        self._played_grenade_throw_sounds: set[str] = set()
+        self._played_explosion_sounds: set[str] = set()
         self._shot_sound_debounce: dict[str, float] = {}
         self._prev_reload_audio_state: dict[str, float] = {}
         self._last_empty_sound_at = 0.0
@@ -936,6 +938,31 @@ class GameApp:
             return
         self._play_shot_sound(owner_id, weapon_key, pos, floor, projectile_id)
 
+    def _play_position_action_event(
+        self,
+        event: dict[str, object],
+        action: str,
+        *,
+        once_group: str,
+    ) -> None:
+        entity_id = str(
+            event.get("entity_id")
+            or event.get("projectile_id")
+            or f"{action}:{event.get('tick', '')}:{event.get('x', '')}:{event.get('y', '')}"
+        )
+        try:
+            pos = Vec2(float(event.get("x", 0.0)), float(event.get("y", 0.0)))
+            floor = int(event.get("floor", 0))
+        except (TypeError, ValueError):
+            return
+
+        if once_group == "grenade_throw":
+            self._play_grenade_throw_sound_once(entity_id, pos, floor)
+        elif once_group == "explosion":
+            self._play_explosion_sound_once(entity_id, action, pos, floor)
+        else:
+            self._play_action_sound(action, pos, floor)
+
     def _play_shot_sound(self, owner_id: str, weapon_key: str, pos: Vec2, floor: int, projectile_id: str = "") -> None:
         if projectile_id and projectile_id in self._played_projectile_sounds:
             return
@@ -963,6 +990,47 @@ class GameApp:
             return
         self.audio.play_action_sound(sound_key, volume=volume, pan=pan)
 
+    def _play_action_sound(self, action: str, pos: Vec2 | None, floor: int, *, local: bool = False) -> None:
+        spec = self.audio_tuning.action_sounds.get(action)
+        if not spec:
+            return
+        volume, pan = (
+            (1.0, 0.0)
+            if local
+            else self._spatial_sound_params(
+                pos,
+                floor,
+                max_distance=spec.hearing_distance,
+                full_distance=spec.full_volume_distance,
+            )
+        )
+        if volume <= 0.0:
+            return
+        self.audio.play_action_sound(
+            spec.key,
+            volume=volume,
+            pan=pan,
+            echo_delay=spec.echo_delay,
+            echo_volume=spec.echo_volume,
+        )
+
+    def _play_grenade_throw_sound_once(self, entity_id: str, pos: Vec2, floor: int) -> None:
+        if entity_id in self._played_grenade_throw_sounds:
+            return
+        self._played_grenade_throw_sounds.add(entity_id)
+        if len(self._played_grenade_throw_sounds) > 1024:
+            self._played_grenade_throw_sounds.clear()
+        self._play_action_sound("grenade_throw", pos, floor)
+
+    def _play_explosion_sound_once(self, entity_id: str, action: str, pos: Vec2, floor: int) -> None:
+        key = f"{action}:{entity_id}"
+        if key in self._played_explosion_sounds:
+            return
+        self._played_explosion_sounds.add(key)
+        if len(self._played_explosion_sounds) > 1024:
+            self._played_explosion_sounds.clear()
+        self._play_action_sound(action, pos, floor)
+
     def _weapon_sound_key(self, weapon_key: str, action: str) -> str:
         spec = self.audio_tuning.weapon_sounds.get(weapon_key)
         if spec:
@@ -973,7 +1041,14 @@ class GameApp:
             return "reload"
         return "empty"
 
-    def _spatial_sound_params(self, pos: Vec2 | None, floor: int) -> tuple[float, float]:
+    def _spatial_sound_params(
+        self,
+        pos: Vec2 | None,
+        floor: int,
+        *,
+        max_distance: float | None = None,
+        full_distance: float | None = None,
+    ) -> tuple[float, float]:
         if not pos:
             return 1.0, 0.0
         snapshot = self._snapshot()
@@ -983,8 +1058,11 @@ class GameApp:
         dx = pos.x - listener.pos.x
         dy = pos.y - listener.pos.y
         distance = math.hypot(dx, dy)
-        max_distance = max(1.0, float(self.audio_tuning.shot_hearing_distance))
-        full_distance = min(max_distance, max(0.0, float(self.audio_tuning.shot_full_volume_distance)))
+        max_distance = max(1.0, float(max_distance if max_distance is not None else self.audio_tuning.shot_hearing_distance))
+        full_distance = min(
+            max_distance,
+            max(0.0, float(full_distance if full_distance is not None else self.audio_tuning.shot_full_volume_distance)),
+        )
         if distance >= max_distance:
             return 0.0, 0.0
         if distance <= full_distance:
@@ -1013,6 +1091,15 @@ class GameApp:
                 continue
             if kind == "shot":
                 self._play_shot_event(event)
+                continue
+            if kind == "grenade_thrown":
+                self._play_position_action_event(event, "grenade_throw", once_group="grenade_throw")
+                continue
+            if kind == "grenade_exploded":
+                self._play_position_action_event(event, "grenade_explosion", once_group="explosion")
+                continue
+            if kind == "mine_exploded":
+                self._play_position_action_event(event, "mine_explosion", once_group="explosion")
                 continue
             if kind == "zombie_killed":
                 self._add_zombie_death_from_event(event)
@@ -2766,6 +2853,10 @@ class GameApp:
         current_mines: dict[str, tuple[Vec2, int, str]] = {
             mine.id: (mine.pos.copy(), mine.floor, mine.kind) for mine in snapshot.mines.values()
         }
+        for grenade_id, (pos, floor, _kind) in current_grenades.items():
+            if grenade_id not in self._prev_grenade_state:
+                self._play_grenade_throw_sound_once(grenade_id, pos, floor)
+
         for grenade_id, (pos, floor, kind) in self._prev_grenade_state.items():
             if grenade_id in current_grenades:
                 continue
@@ -2773,6 +2864,7 @@ class GameApp:
             self._explosion_effects.append(
                 {"pos": pos, "floor": floor, "radius": spec.blast_radius, "color": (255, 168, 118), "start": now, "duration": 0.34},
             )
+            self._play_explosion_sound_once(grenade_id, "grenade_explosion", pos, floor)
         for mine_id, (pos, floor, kind) in self._prev_mine_state.items():
             if mine_id in current_mines:
                 continue
@@ -2780,6 +2872,7 @@ class GameApp:
             self._explosion_effects.append(
                 {"pos": pos, "floor": floor, "radius": spec.blast_radius, "color": (212, 140, 255), "start": now, "duration": 0.36},
             )
+            self._play_explosion_sound_once(mine_id, "mine_explosion", pos, floor)
         self._prev_grenade_state = current_grenades
         self._prev_mine_state = current_mines
         self._explosion_effects = [

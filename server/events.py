@@ -4,7 +4,7 @@ from typing import Any
 
 
 MAX_EVENTS_PER_TICK = 96
-POSITION_EVENT_RADIUS = 2200.0
+POSITION_EVENT_RADIUS = 2800.0
 
 
 def derive_events(previous: dict[str, Any] | None, current: dict[str, Any], tick: int) -> list[dict[str, Any]]:
@@ -12,6 +12,7 @@ def derive_events(previous: dict[str, Any] | None, current: dict[str, Any], tick
         return []
     events: list[dict[str, Any]] = []
     _append_new_projectiles(events, previous, current, tick)
+    _append_new_grenades(events, previous, current, tick)
     _append_removed_entities(events, previous, current, tick, "zombies", "zombie_killed")
     _append_removed_entities(events, previous, current, tick, "grenades", "grenade_exploded")
     _append_removed_entities(events, previous, current, tick, "mines", "mine_exploded")
@@ -71,6 +72,26 @@ def _append_new_projectiles(events: list[dict[str, Any]], previous: dict[str, An
                 "x": pos.get("x", 0.0),
                 "y": pos.get("y", 0.0),
                 "floor": projectile.get("floor", 0),
+            }
+        )
+
+
+def _append_new_grenades(events: list[dict[str, Any]], previous: dict[str, Any], current: dict[str, Any], tick: int) -> None:
+    old_grenades = _collection(previous, "grenades")
+    for grenade_id, grenade in _collection(current, "grenades").items():
+        if grenade_id in old_grenades or not isinstance(grenade, dict):
+            continue
+        pos = _pos(grenade)
+        events.append(
+            {
+                "kind": "grenade_thrown",
+                "tick": tick,
+                "entity_id": grenade_id,
+                "owner_id": grenade.get("owner_id", ""),
+                "entity_kind": grenade.get("kind", "grenade"),
+                "x": pos.get("x", 0.0),
+                "y": pos.get("y", 0.0),
+                "floor": grenade.get("floor", 0),
             }
         )
 
@@ -159,10 +180,10 @@ def _position_event_visible(event: dict[str, Any], snapshot: dict[str, Any], pla
         return False
     player_pos = _pos(player)
     try:
-        if int(event.get("floor", 0)) != int(player.get("floor", 0)):
-            return False
+        same_floor = int(event.get("floor", 0)) == int(player.get("floor", 0))
         dx = float(event.get("x", 0.0)) - float(player_pos.get("x", 0.0))
         dy = float(event.get("y", 0.0)) - float(player_pos.get("y", 0.0))
     except (TypeError, ValueError):
         return False
-    return dx * dx + dy * dy <= POSITION_EVENT_RADIUS * POSITION_EVENT_RADIUS
+    radius = POSITION_EVENT_RADIUS if same_floor else POSITION_EVENT_RADIUS * 0.45
+    return dx * dx + dy * dy <= radius * radius
