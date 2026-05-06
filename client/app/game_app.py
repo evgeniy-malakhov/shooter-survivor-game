@@ -9,10 +9,31 @@ from pathlib import Path
 
 import pygame
 
+from client.app.app_state import AppState, normalize_app_state
 from client.audio import AudioManager
 from client.audio_config import load_audio_tuning
+from client.controllers.overlay_state import GameplayOverlayState
+from client.core.assets import ClientAssets
+from client.core.camera import CameraController
+from client.core.display import DisplayConfig, DisplayManager
+from client.core.perf import ClientPerfStats
 from client.death_effects import load_death_effect_tuning
+from client.effects.visual_effects_state import VisualEffectsState
+from client.input.action_buffer import ClientActionBuffer
 from client.network import OnlineClient, ping_server
+from client.render.render_context import RenderContext
+from client.render.render_frame import RenderFrame
+from client.render.render_frame_builder import RenderFrameBuilder
+from client.render.render_resources import RenderFonts, RenderText
+from client.render.ui.text_cache import TextCache
+from client.visibility.render_culling import point_visible, rect_visible
+from client.scenes.gameplay_scene import GameplayScene
+from client.scenes.loading_scene import LoadingScene
+from client.scenes.menu_scene import MenuScene
+from client.scenes.options_scene import OptionsScene
+from client.scenes.scene_manager import SceneManager
+from client.scenes.server_browser_scene import ServerBrowserScene
+from client.scenes.single_setup_scene import SingleSetupScene
 from client.settings_schema import (
     SETTINGS_TABS,
     tab_has_audio_sliders,
@@ -41,7 +62,7 @@ SCREEN_H = 760
 MIN_WINDOW_W = 960
 MIN_WINDOW_H = 570
 FPS = 60
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 ICON_MAPPING_PATH = ROOT / "configs" / "icon_mapping.json"
 CLIENT_SETTINGS_PATH = ROOT / "client_settings.json"
 
@@ -115,14 +136,14 @@ class ServerEntry:
 class GameApp:
     def __init__(self) -> None:
         pygame.init()
-        pygame.display.set_caption("Neon Outbreak")
-        self.fullscreen = False
-        self.windowed_size = (SCREEN_W, SCREEN_H)
-        self.display = pygame.display.set_mode(self.windowed_size, pygame.RESIZABLE)
-        self.screen = pygame.Surface((SCREEN_W, SCREEN_H)).convert()
-        self.render_rect = pygame.Rect(0, 0, SCREEN_W, SCREEN_H)
-        self.render_scale = 1.0
-        self._update_display_transform()
+        self.display_manager = DisplayManager(
+            DisplayConfig(
+                virtual_size=(SCREEN_W, SCREEN_H),
+                min_window_size=(MIN_WINDOW_W, MIN_WINDOW_H),
+                caption="Neon Outbreak",
+            )
+        )
+        self._sync_display_refs()
         self.clock = pygame.time.Clock()
         self.font = pygame.font.SysFont("segoeui", 18)
         self.small = pygame.font.SysFont("segoeui", 14)
@@ -134,10 +155,16 @@ class GameApp:
         self.emphasis_font = pygame.font.SysFont("georgia", 16, bold=True, italic=True)
         self.language = "en"
         self.locales = self._load_locales()
-        self.icon_mapping = self._load_icon_mapping()
-        self.item_images = self._load_item_images()
-        self.loading_poster, self.loading_spinner = self._load_loading_assets()
-        self._icon_cache: dict[tuple[str, int, int], pygame.Surface] = {}
+        self.assets = ClientAssets(
+            root=ROOT,
+            default_icon_mapping=DEFAULT_ICON_MAPPING,
+            icon_mapping_path=ICON_MAPPING_PATH,
+        )
+        self.icon_mapping = self.assets.icon_mapping
+        self.item_images = self.assets.item_images
+        self.loading_poster = self.assets.loading.poster
+        self.loading_spinner = self.assets.loading.spinner
+        self._icon_cache = self.assets.icon_cache
         self.damage_flash = 0.0
         self._last_local_health: float | None = None
         self._regen_target_health: float | None = None
@@ -147,6 +174,12 @@ class GameApp:
         self._join_notifications: list[dict[str, object]] = []
         self.death_effects = load_death_effect_tuning()
         self._death_effects: list[dict[str, object]] = []
+        self.visual_effects = VisualEffectsState(
+            damage_flash=self.damage_flash,
+            explosion_effects=self._explosion_effects,
+            death_effects=self._death_effects,
+            join_notifications=self._join_notifications,
+        )
         self._prev_zombie_death_state: dict[str, dict[str, object]] = {}
         self._prev_player_death_state: dict[str, dict[str, object]] = {}
         self._prev_projectile_audio_state: dict[str, dict[str, object]] = {}
@@ -156,10 +189,22 @@ class GameApp:
         self._shot_sound_debounce: dict[str, float] = {}
         self._prev_reload_audio_state: dict[str, float] = {}
         self._last_empty_sound_at = 0.0
+        self.overlay_state = GameplayOverlayState()
+        self.perf_stats = ClientPerfStats()
+        self.render_frame_builder = RenderFrameBuilder()
+        self.text_cache = TextCache()
+        self.show_perf_overlay = False
         self.scoreboard_scroll = 0
         saved_settings = self._load_client_settings()
         self.camera_distance = max(0.78, min(1.08, float(saved_settings.get("camera_distance", 0.92))))
         self.camera_zoom = self.camera_distance
+        self.camera_controller = CameraController(
+            viewport_size=(SCREEN_W, SCREEN_H),
+            world_size=(MAP_WIDTH, MAP_HEIGHT),
+            distance=self.camera_distance,
+            zoom=self.camera_zoom,
+        )
+        self.actions = ClientActionBuffer()
         self.audio_tuning = load_audio_tuning()
         self.master_volume = self._read_volume(saved_settings, "master_volume", 0.8)
         self.music_volume = self._read_volume(saved_settings, "music_volume", 0.55)
@@ -168,7 +213,8 @@ class GameApp:
         self.audio.set_master_volume(self.master_volume)
         self.audio.set_music_volume(self.music_volume)
         self.audio.set_effects_volume(self.effects_volume)
-        self.state = "menu"
+        self.app_state = AppState.MENU
+        self.state = self.app_state.value
         self.player_name = self._clean_player_name(str(saved_settings.get("player_name", "Operator")))
         self.name_editing = False
         self.name_input = self.player_name
@@ -251,9 +297,127 @@ class GameApp:
         self._pinging = False
         # Create responsive menu buttons with proper centering
         self._menu_buttons = self._create_menu_buttons()
+        self.scene_manager = self._build_scene_manager()
         if self.settings["fullscreen"]:
             self._set_display_mode(True)
         self._sync_menu_music()
+
+    def _build_scene_manager(self) -> SceneManager:
+        manager = SceneManager(
+            state_getter=lambda: self.state,
+            state_setter=self._set_state,
+            on_quit=self._request_quit,
+            on_resize=self._handle_display_resize,
+        )
+        manager.register(AppState.MENU, MenuScene(self))
+        manager.register(AppState.OPTIONS, OptionsScene(self))
+        manager.register(AppState.SINGLE_SETUP, SingleSetupScene(self))
+        manager.register(AppState.SINGLE_LOADING, LoadingScene(self))
+        manager.register(AppState.SERVERS, ServerBrowserScene(self))
+        manager.register(AppState.SINGLE, GameplayScene(self))
+        manager.register(AppState.ONLINE_GAME, GameplayScene(self))
+        return manager
+
+    @property
+    def inventory_open(self) -> bool:
+        return self.overlay_state.inventory_open
+
+    @inventory_open.setter
+    def inventory_open(self, value: bool) -> None:
+        self.overlay_state.inventory_open = bool(value)
+
+    @property
+    def backpack_open(self) -> bool:
+        return self.overlay_state.backpack_open
+
+    @backpack_open.setter
+    def backpack_open(self, value: bool) -> None:
+        self.overlay_state.backpack_open = bool(value)
+
+    @property
+    def settings_open(self) -> bool:
+        return self.overlay_state.settings_open
+
+    @settings_open.setter
+    def settings_open(self, value: bool) -> None:
+        self.overlay_state.settings_open = bool(value)
+
+    @property
+    def craft_open(self) -> bool:
+        return self.overlay_state.craft_open
+
+    @craft_open.setter
+    def craft_open(self, value: bool) -> None:
+        self.overlay_state.craft_open = bool(value)
+
+    @property
+    def weapon_custom_open(self) -> bool:
+        return self.overlay_state.weapon_custom_open
+
+    @weapon_custom_open.setter
+    def weapon_custom_open(self, value: bool) -> None:
+        self.overlay_state.weapon_custom_open = bool(value)
+
+    @property
+    def minimap_big(self) -> bool:
+        return self.overlay_state.minimap_big
+
+    @minimap_big.setter
+    def minimap_big(self, value: bool) -> None:
+        self.overlay_state.minimap_big = bool(value)
+
+    @property
+    def drag_source(self) -> dict[str, object] | None:
+        return self.overlay_state.drag_source
+
+    @drag_source.setter
+    def drag_source(self, value: dict[str, object] | None) -> None:
+        self.overlay_state.drag_source = value
+
+    @property
+    def craft_scroll(self) -> int:
+        return self.overlay_state.craft_scroll
+
+    @craft_scroll.setter
+    def craft_scroll(self, value: int) -> None:
+        self.overlay_state.craft_scroll = int(value)
+
+    @property
+    def weapon_modules_scroll(self) -> int:
+        return self.overlay_state.weapon_modules_scroll
+
+    @weapon_modules_scroll.setter
+    def weapon_modules_scroll(self, value: int) -> None:
+        self.overlay_state.weapon_modules_scroll = int(value)
+
+    @property
+    def scoreboard_scroll(self) -> int:
+        return self.overlay_state.scoreboard_scroll
+
+    @scoreboard_scroll.setter
+    def scoreboard_scroll(self, value: int) -> None:
+        self.overlay_state.scoreboard_scroll = int(value)
+
+    @property
+    def custom_weapon_slot(self) -> str:
+        return self.overlay_state.custom_weapon_slot
+
+    @custom_weapon_slot.setter
+    def custom_weapon_slot(self, value: str) -> None:
+        self.overlay_state.custom_weapon_slot = str(value)
+
+    def _set_state(self, state: str | AppState) -> None:
+        self.app_state = normalize_app_state(state)
+        self.state = self.app_state.value
+
+    def _request_quit(self) -> None:
+        self.running = False
+
+    def _handle_display_resize(self, size: tuple[int, int]) -> None:
+        if self.fullscreen:
+            return
+        self.display_manager.resize_window(size)
+        self._sync_display_refs()
 
     def _create_menu_buttons(self) -> list[Button]:
         """Create menu buttons with responsive positioning"""
@@ -337,61 +501,20 @@ class GameApp:
         return text.format(**values) if values else text
 
     def _load_icon_mapping(self) -> dict[str, str]:
-        mapping = dict(DEFAULT_ICON_MAPPING)
-        if not ICON_MAPPING_PATH.exists():
-            return mapping
-        try:
-            raw = json.loads(ICON_MAPPING_PATH.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return mapping
-        if not isinstance(raw, dict):
-            return mapping
-        for key, value in raw.items():
-            image_key = Path(str(value)).stem
-            if image_key:
-                mapping[str(key)] = image_key
-        return mapping
+        return self.assets.load_icon_mapping() if hasattr(self, "assets") else dict(DEFAULT_ICON_MAPPING)
 
     def _load_item_images(self) -> dict[str, pygame.Surface]:
-        images: dict[str, pygame.Surface] = {}
-        image_dir = ROOT / "images"
-        for path in image_dir.rglob("*.png"):
-            if path.exists():
-                try:
-                    images[path.stem] = self._load_alpha_image(path)
-                except pygame.error:
-                    pass
-        for key, image_key in self.icon_mapping.items():
-            path = image_dir / f"{image_key}.png"
-            if not path.exists():
-                continue
-            try:
-                images[key] = self._load_alpha_image(path)
-            except pygame.error:
-                pass
-        return images
+        return self.assets.load_item_images()
 
     def _load_alpha_image(self, path: Path) -> pygame.Surface:
-        image = pygame.image.load(str(path))
-        return image.convert_alpha()
+        return self.assets.load_alpha_image(path)
 
     def _load_loading_assets(self) -> tuple[pygame.Surface | None, pygame.Surface | None]:
-        poster = self._try_load_image(
-            ROOT / "images" / "load" / "load.png",
-            ROOT / "images" / "screen" / "load.png",
-        )
-        spinner = self._try_load_image(ROOT / "images" / "screen" / "loader.gif")
-        return poster, spinner
+        loading = self.assets.load_loading_assets()
+        return loading.poster, loading.spinner
 
     def _try_load_image(self, *paths: Path) -> pygame.Surface | None:
-        for path in paths:
-            if not path.exists():
-                continue
-            try:
-                return pygame.image.load(str(path)).convert_alpha()
-            except pygame.error:
-                continue
-        return None
+        return self.assets.try_load_image(*paths)
 
     def item_title(self, key: str) -> str:
         if key in WEAPONS:
@@ -410,72 +533,83 @@ class GameApp:
 
     def run(self) -> None:
         while self.running:
+            frame_start = time.perf_counter()
             dt = self.clock.tick(FPS) / 1000.0
-            self._handle_events()
-            self._update(dt)
-            self._draw()
+            events = pygame.event.get()
+            self.scene_manager.handle_events(events)
+            update_start = time.perf_counter()
+            self.scene_manager.update(dt)
+            self.perf_stats.update_ms = (time.perf_counter() - update_start) * 1000.0
+            ctx = self._current_render_context(dt)
+            self.scene_manager.render(ctx)
+            if self.show_perf_overlay:
+                self._draw_perf_overlay()
+            self._present()
+            self.perf_stats.frame_ms = (time.perf_counter() - frame_start) * 1000.0
         if self.world:
             self.world.close()
         self.online.close()
         self.audio.close()
         pygame.quit()
 
+    def _current_render_context(self, dt: float) -> RenderContext:
+        prepare_start = time.perf_counter()
+        snapshot = self._snapshot()
+        player = self._local_player(snapshot)
+        camera = self._camera(player)
+        render_frame = self._build_render_frame(snapshot, player, camera)
+        self.perf_stats.render_prepare_ms = (time.perf_counter() - prepare_start) * 1000.0
+        return self._build_render_context(snapshot, player, camera, dt, render_frame)
+
+    def _build_render_frame(
+        self,
+        snapshot: WorldSnapshot | None,
+        player: PlayerState | None,
+        camera: Vec2,
+    ) -> RenderFrame | None:
+        if not snapshot:
+            self.perf_stats.reset_visible_counts()
+            return None
+        view = self.camera_controller.visible_world_rect(camera, margin=360.0)
+        return self.render_frame_builder.build(snapshot, view, player, self.perf_stats)
+
+    def _sync_display_refs(self) -> None:
+        self.fullscreen = self.display_manager.fullscreen
+        self.windowed_size = self.display_manager.windowed_size
+        self.display = self.display_manager.display
+        self.screen = self.display_manager.screen
+        self.render_rect = self.display_manager.render_rect
+        self.render_scale = self.display_manager.render_scale
+
     def _set_display_mode(self, fullscreen: bool) -> None:
-        if fullscreen:
-            desktop_sizes = pygame.display.get_desktop_sizes() if hasattr(pygame.display, "get_desktop_sizes") else []
-            if desktop_sizes:
-                size = desktop_sizes[0]
-            else:
-                info = pygame.display.Info()
-                size = (max(1, info.current_w), max(1, info.current_h))
-            self.display = pygame.display.set_mode(size, pygame.FULLSCREEN)
-        else:
-            width = max(MIN_WINDOW_W, int(self.windowed_size[0]))
-            height = max(MIN_WINDOW_H, int(self.windowed_size[1]))
-            self.windowed_size = (width, height)
-            self.display = pygame.display.set_mode(self.windowed_size, pygame.RESIZABLE)
-        self.fullscreen = fullscreen
+        self.display_manager.set_display_mode(fullscreen)
+        self._sync_display_refs()
         self.settings["fullscreen"] = fullscreen
-        self._update_display_transform()
 
     def _toggle_fullscreen(self) -> None:
         self._set_display_mode(not self.fullscreen)
 
     def _update_display_transform(self) -> None:
-        display_w, display_h = self.display.get_size()
-        scale = min(display_w / SCREEN_W, display_h / SCREEN_H)
-        self.render_scale = max(0.1, scale)
-        render_w = max(1, int(SCREEN_W * self.render_scale))
-        render_h = max(1, int(SCREEN_H * self.render_scale))
-        self.render_rect = pygame.Rect((display_w - render_w) // 2, (display_h - render_h) // 2, render_w, render_h)
+        self.display_manager.update_transform()
+        self._sync_display_refs()
 
     def _display_to_screen(self, pos: tuple[int, int]) -> tuple[int, int]:
-        x = int((pos[0] - self.render_rect.x) / self.render_scale)
-        y = int((pos[1] - self.render_rect.y) / self.render_scale)
-        return x, y
+        return self.display_manager.display_to_screen(pos)
 
     def _mouse_pos(self) -> tuple[int, int]:
         return self._display_to_screen(pygame.mouse.get_pos())
 
     def _present(self) -> None:
-        self.display.fill((0, 0, 0))
-        if self.render_rect.size == (SCREEN_W, SCREEN_H):
-            self.display.blit(self.screen, self.render_rect)
-        else:
-            scaled = pygame.transform.smoothscale(self.screen, self.render_rect.size)
-            self.display.blit(scaled, self.render_rect)
-        pygame.display.flip()
+        self.display_manager.present()
+        self._sync_display_refs()
 
     def _handle_events(self) -> None:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.running = False
             elif event.type == pygame.VIDEORESIZE and not self.fullscreen:
-                width = max(MIN_WINDOW_W, int(event.w))
-                height = max(MIN_WINDOW_H, int(event.h))
-                self.windowed_size = (width, height)
-                self.display = pygame.display.set_mode(self.windowed_size, pygame.RESIZABLE)
-                self._update_display_transform()
+                self.display_manager.resize_window((int(event.w), int(event.h)))
+                self._sync_display_refs()
             elif event.type == pygame.KEYDOWN:
                 self._handle_keydown(event)
             elif event.type == pygame.MOUSEBUTTONDOWN:
@@ -489,6 +623,9 @@ class GameApp:
 
     def _handle_keydown(self, event: pygame.event.Event) -> None:
         key = event.key
+        if key == pygame.K_F3:
+            self.show_perf_overlay = not self.show_perf_overlay
+            return
         if self.name_editing:
             if key in (pygame.K_RETURN, pygame.K_KP_ENTER):
                 self._commit_player_name()
@@ -511,9 +648,9 @@ class GameApp:
             elif self.state == "servers":
                 self._back_to_menu()
             elif self.state in {"options", "single_setup"}:
-                self.state = "menu"
+                self._set_state(AppState.MENU)
             elif self.state == "single_loading" and self.loading_error:
-                self.state = "single_setup"
+                self._set_state(AppState.SINGLE_SETUP)
             elif self.state in {"single", "online_game"}:
                 self.settings_open = True
             return
@@ -539,23 +676,23 @@ class GameApp:
                 self.inventory_open = False
                 self.drag_source = None
         elif key == pygame.K_r:
-            self.pending_reload = True
+            self._queue_client_action("reload")
         elif key == pygame.K_e:
-            self.pending_pickup = True
+            self._queue_client_action("pickup")
         elif key == pygame.K_f:
-            self.pending_interact = True
+            self._queue_client_action("interact")
         elif key == pygame.K_q:
-            self.pending_toggle_utility = True
+            self._queue_client_action("toggle_utility")
         elif key == pygame.K_SPACE:
-            self.pending_respawn = True
+            self._queue_client_action("respawn")
         elif key == pygame.K_g:
-            self.pending_throw_grenade = True
+            self._queue_client_action("throw_grenade")
         elif key == pygame.K_m:
             self.minimap_big = not self.minimap_big
         elif key in (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5, pygame.K_6, pygame.K_7, pygame.K_8, pygame.K_9):
-            self.pending_slot = str(key - pygame.K_0)
+            self._queue_client_action("select_slot", {"slot": str(key - pygame.K_0)})
         elif key == pygame.K_0:
-            self.pending_slot = "0"
+            self._queue_client_action("select_slot", {"slot": "0"})
 
     def _handle_mouse_down(self, event: pygame.event.Event) -> None:
         pos = self._display_to_screen(event.pos)
@@ -690,18 +827,7 @@ class GameApp:
 
     def _handle_click(self, pos: tuple[int, int]) -> None:
         if self.state == "menu":
-            for button in self._menu_buttons:
-                if button.hovered(pos):
-                    if button.action == "single":
-                        self.state = "single_setup"
-                    elif button.action == "online":
-                        self._show_servers()
-                    elif button.action == "options":
-                        self.settings_tab = "general"
-                        self.options_scroll = 0
-                        self.state = "options"
-                    elif button.action == "quit":
-                        self.running = False
+            return
         elif self.state == "options":
             self._handle_settings_click(pos)
         elif self.state == "single_setup":
@@ -740,7 +866,7 @@ class GameApp:
         if self._settings_back_rect().collidepoint(pos):
             if self.name_editing:
                 self._commit_player_name()
-            self.state = "menu"
+            self._set_state(AppState.MENU)
             return
         for index, tab in enumerate(self.settings_tabs):
             rect = pygame.Rect(panel.x + 32 + index * 112, panel.y + 106, 102, 36)
@@ -887,7 +1013,8 @@ class GameApp:
         self._update_damage_feedback(dt)
 
     def _sync_menu_music(self) -> None:
-        self.audio.set_menu_music_active(self.state in {"menu", "options", "single_setup", "single_loading", "servers"})
+        self.app_state = normalize_app_state(self.state)
+        self.audio.set_menu_music_active(self.app_state.uses_menu_music)
 
     def _maybe_play_empty_weapon_sound(self, player: PlayerState) -> None:
         weapon = player.active_weapon()
@@ -1263,14 +1390,8 @@ class GameApp:
     def _update_camera_zoom(self, dt: float) -> None:
         snapshot = self._snapshot()
         player = self._local_player(snapshot) if snapshot else None
-        sprint_target = self.camera_distance * 0.9
-        target = sprint_target if player and player.alive and player.sprinting else self.camera_distance
-        target = max(0.72, min(1.12, target))
-        speed = 3.1 if target < self.camera_zoom else 4.8
-        blend = 1.0 - math.exp(-speed * max(0.0, dt))
-        self.camera_zoom += (target - self.camera_zoom) * blend
-        if abs(self.camera_zoom - target) < 0.002:
-            self.camera_zoom = target
+        self.camera_controller.distance = self.camera_distance
+        self.camera_zoom = self.camera_controller.update_zoom(dt, player)
 
     def _update_damage_feedback(self, dt: float) -> None:
         self.damage_flash = max(0.0, self.damage_flash - dt * 1.9)
@@ -1341,8 +1462,11 @@ class GameApp:
                 self.world.apply_client_command(ClientCommand(player_id, self._local_command_id, kind, payload))
             self._clear_transient_inputs()
 
+    def _queue_client_action(self, kind: str, payload: dict[str, object] | None = None) -> None:
+        self.actions.push(kind, payload)
+
     def _pending_command_specs(self) -> list[tuple[str, dict[str, object]]]:
-        commands: list[tuple[str, dict[str, object]]] = []
+        commands = self.actions.peek_command_specs()
         if self.pending_slot:
             commands.append(("select_slot", {"slot": self.pending_slot}))
         if self.pending_reload:
@@ -1382,6 +1506,7 @@ class GameApp:
         self.pending_repair_slot = None
         self.pending_slot = None
         self.pending_equip_armor = None
+        self.actions.clear()
 
     def _reset_death_effect_tracking(self) -> None:
         self._death_effects.clear()
@@ -1389,6 +1514,8 @@ class GameApp:
         self._prev_player_death_state.clear()
         self._prev_projectile_audio_state.clear()
         self._played_projectile_sounds.clear()
+        self._played_grenade_throw_sounds.clear()
+        self._played_explosion_sounds.clear()
         self._shot_sound_debounce.clear()
         self._prev_reload_audio_state.clear()
         self._last_empty_sound_at = 0.0
@@ -1404,7 +1531,7 @@ class GameApp:
         self.loading_error = None
         self.loading_state = LoadingScreenState(self.single_map_key)
         self._loading_started_at = time.time()
-        self.state = "single_loading"
+        self._set_state(AppState.SINGLE_LOADING)
         self._save_client_settings()
 
         def worker() -> None:
@@ -1471,10 +1598,10 @@ class GameApp:
         self.craft_open = False
         self.weapon_custom_open = False
         self._reset_death_effect_tracking()
-        self.state = "single"
+        self._set_state(AppState.SINGLE)
 
     def _show_servers(self) -> None:
-        self.state = "servers"
+        self._set_state(AppState.SERVERS)
         self.server_entries = self._load_servers()
         self.selected_server = 0
         self._refresh_pings()
@@ -1492,7 +1619,7 @@ class GameApp:
             self.backpack_open = False
             self.weapon_custom_open = False
             self._reset_death_effect_tracking()
-            self.state = "online_game"
+            self._set_state(AppState.ONLINE_GAME)
         except OSError as exc:
             entry.status = f"error: {exc}"
 
@@ -1501,7 +1628,7 @@ class GameApp:
         if self.world:
             self.world.close()
             self.world = None
-        self.state = "menu"
+        self._set_state(AppState.MENU)
         self.inventory_open = False
         self.backpack_open = False
         self.settings_open = False
@@ -1568,50 +1695,28 @@ class GameApp:
         return snapshot.players.get(player_id or "")
 
     def _camera(self, player: PlayerState | None) -> Vec2:
-        if not player:
-            return Vec2(0, 0)
-        viewport_w = SCREEN_W / max(0.1, self.camera_zoom)
-        viewport_h = SCREEN_H / max(0.1, self.camera_zoom)
-        return Vec2(
-            max(0, min(max(0.0, MAP_WIDTH - viewport_w), player.pos.x - viewport_w * 0.5)),
-            max(0, min(max(0.0, MAP_HEIGHT - viewport_h), player.pos.y - viewport_h * 0.5)),
-        )
+        self.camera_controller.distance = self.camera_distance
+        self.camera_controller.zoom = self.camera_zoom
+        return self.camera_controller.camera_for_player(player)
 
     def _mouse_world(self, player: PlayerState | None) -> Vec2:
-        mx, my = self._mouse_pos()
         camera = self._camera(player)
-        zoom = max(0.1, self.camera_zoom)
-        return Vec2(mx / zoom + camera.x, my / zoom + camera.y)
+        return self.camera_controller.screen_to_world(self._mouse_pos(), camera)
 
     def _world_to_screen(self, pos: Vec2, camera: Vec2) -> tuple[int, int]:
-        zoom = max(0.1, self.camera_zoom)
-        return int((pos.x - camera.x) * zoom), int((pos.y - camera.y) * zoom)
+        self.camera_controller.zoom = self.camera_zoom
+        return self.camera_controller.world_to_screen(pos, camera)
 
     def _world_rect_to_screen(self, rect: RectState, camera: Vec2) -> pygame.Rect:
-        zoom = max(0.1, self.camera_zoom)
-        return pygame.Rect(
-            int((rect.x - camera.x) * zoom),
-            int((rect.y - camera.y) * zoom),
-            max(1, int(rect.w * zoom)),
-            max(1, int(rect.h * zoom)),
-        )
+        self.camera_controller.zoom = self.camera_zoom
+        return self.camera_controller.world_rect_to_screen(rect, camera)
 
     def _world_size(self, value: float, minimum: int = 1) -> int:
-        return max(minimum, int(value * max(0.1, self.camera_zoom)))
+        self.camera_controller.zoom = self.camera_zoom
+        return self.camera_controller.world_size_to_screen(value, minimum)
 
     def _draw(self) -> None:
-        if self.state == "menu":
-            self._draw_menu()
-        elif self.state == "single_setup":
-            self._draw_single_setup()
-        elif self.state == "single_loading":
-            self._draw_loading_screen()
-        elif self.state == "options":
-            self._draw_options_menu()
-        elif self.state == "servers":
-            self._draw_servers()
-        elif self.state in {"single", "online_game"}:
-            self._draw_game()
+        self.scene_manager.render(self._current_render_context(0.0))
         self._present()
 
     def _draw_menu(self) -> None:
@@ -1865,55 +1970,84 @@ class GameApp:
         self._draw_button(connect_rect, self.tr("servers.connect"), connect_rect.collidepoint(mouse))
 
     def _draw_game(self) -> None:
-        snapshot = self._snapshot()
-        player = self._local_player(snapshot)
-        camera = self._camera(player)
-        self.screen.fill(BG)
-        self._draw_world_background(camera)
-        if snapshot:
-            self._update_explosion_effects(snapshot, player)
-            self._update_death_effects(snapshot)
-            self._update_weapon_audio_from_snapshot(snapshot)
-            self._draw_tunnels(snapshot, camera, player)
-            self._draw_buildings(snapshot, camera, player)
-            if player and self.settings["noise_radius"]:
-                self._draw_noise_radius(player, camera)
-            self._draw_loot(snapshot, camera)
-            self._draw_projectiles(snapshot, camera)
-            self._draw_grenades(snapshot, camera)
-            self._draw_mines(snapshot, camera)
-            self._draw_poison(snapshot, camera)
-            self._draw_death_blood_effects(camera, player)
-            self._draw_zombies(snapshot, camera)
-            self._draw_players(snapshot, camera)
-            self._draw_soldiers(snapshot, camera)
-            self._draw_death_body_effects(camera, player)
-            self._draw_weapon_utilities(snapshot, camera, player)
-            self._draw_explosion_effects(camera, player)
-            if player:
-                self._draw_tunnel_darkness(player, camera)
-            if player:
-                self._draw_damage_feedback(player)
-            self._draw_hud(snapshot, player)
-            if self.state == "online_game":
-                self._draw_join_notifications()
-            self._draw_minimap(snapshot, player)
-            if self.state == "online_game":
-                self._draw_connection_status()
-                self._draw_network_notice()
-            if self.settings.get("show_zombie_count", False):
-                self._draw_zombie_counter(snapshot)
-            self._draw_context_prompt(snapshot, player, camera)
-            if pygame.key.get_pressed()[pygame.K_TAB]:
-                self._draw_scoreboard(snapshot)
-            if player and not player.alive:
-                self._draw_death_overlay()
-            if self.backpack_open and player:
-                self._draw_backpack(player)
-            if self.craft_open and player:
-                self._draw_crafting(player)
-            if self.settings_open:
-                self._draw_settings_hub(in_game=True)
+        self.scene_manager.render(self._current_render_context(0.0))
+
+    def _build_render_context(
+        self,
+        snapshot: WorldSnapshot | None,
+        player: PlayerState | None,
+        camera: Vec2,
+        dt: float,
+        render_frame: RenderFrame | None = None,
+    ) -> RenderContext:
+        return RenderContext(
+            screen=self.screen,
+            camera=camera,
+            camera_controller=self.camera_controller,
+            assets=self.assets,
+            snapshot=snapshot,
+            local_player=player,
+            dt=dt,
+            settings=self.settings,
+            fonts=RenderFonts(
+                normal=self.font,
+                small=self.small,
+                big=self.big,
+                mid=self.mid,
+                label=self.label_font,
+                hud_title=self.hud_title_font,
+                hud_value=self.hud_value_font,
+                emphasis=self.emphasis_font,
+            ),
+            text=RenderText(
+                tr=self.tr,
+                item_title=self.item_title,
+                weapon_title=self.weapon_title,
+                rarity_title=self.rarity_title,
+                loot_label=self._loot_label,
+                floor_label=self._floor_label,
+            ),
+            text_cache=self.text_cache,
+            overlay=self.overlay_state,
+            local_player_id=self.local_player_id,
+            online_player_id=self.online.player_id,
+            now=time.time(),
+            render_frame=render_frame,
+            perf=self.perf_stats,
+            effects=self._sync_visual_effect_state(),
+            death_tuning=self.death_effects,
+        )
+
+    def _sync_visual_effect_state(self) -> VisualEffectsState:
+        self.visual_effects.damage_flash = self.damage_flash
+        self.visual_effects.explosion_effects = self._explosion_effects
+        self.visual_effects.death_effects = self._death_effects
+        self.visual_effects.join_notifications = self._join_notifications
+        return self.visual_effects
+
+    def _draw_perf_overlay(self) -> None:
+        stats = self.perf_stats
+        lines = [
+            f"FPS {self.clock.get_fps():5.1f}  Frame {stats.frame_ms:5.1f} ms",
+            f"Update {stats.update_ms:5.1f}  Prepare {stats.render_prepare_ms:5.1f}",
+            f"World {stats.draw_world_ms:5.1f}  UI {stats.draw_ui_ms:5.1f}",
+            f"HUD {stats.hud_ms:5.1f}  Minimap {stats.minimap_ms:5.1f}  Overlay {stats.overlay_ms:5.1f}",
+            (
+                f"Visible P:{stats.visible_players} "
+                f"Z:{stats.visible_zombies} S:{stats.visible_soldiers} L:{stats.visible_loot}"
+            ),
+            f"Text cache hits {stats.text_cache_hits}",
+        ]
+        width = 360
+        height = 24 + len(lines) * 19
+        panel = pygame.Rect(14, 14, width, height)
+        surface = pygame.Surface(panel.size, pygame.SRCALPHA)
+        pygame.draw.rect(surface, (5, 9, 18, 220), surface.get_rect(), border_radius=8)
+        pygame.draw.rect(surface, (76, 225, 255, 150), surface.get_rect(), 1, border_radius=8)
+        self.screen.blit(surface, panel)
+        self._draw_text("F3 performance", panel.x + 12, panel.y + 8, CYAN, self.small)
+        for index, line in enumerate(lines):
+            self._draw_text(line, panel.x + 12, panel.y + 30 + index * 19, TEXT, self.small)
 
     def _draw_neon_background(self) -> None:
         for i in range(18):
@@ -1953,7 +2087,10 @@ class GameApp:
         if not player or player.floor >= 0:
             return
         segments = tunnel_segments(snapshot.buildings)
+        view = self.camera_controller.visible_world_rect(camera, margin=120.0)
         for index, tunnel in enumerate(segments):
+            if not rect_visible(tunnel, view):
+                continue
             rect = self._world_rect_to_screen(tunnel, camera)
             if not rect.colliderect(pygame.Rect(-120, -120, SCREEN_W + 240, SCREEN_H + 240)):
                 continue
@@ -1970,7 +2107,10 @@ class GameApp:
             pygame.draw.circle(self.screen, (98, 136, 176), node, 2)
 
     def _draw_buildings(self, snapshot: WorldSnapshot, camera: Vec2, player: PlayerState | None) -> None:
+        view = self.camera_controller.visible_world_rect(camera, margin=160.0)
         for building in snapshot.buildings.values():
+            if not rect_visible(building.bounds, view):
+                continue
             rect = self._world_rect_to_screen(building.bounds, camera)
             bx, by = rect.x, rect.y
             if not rect.colliderect(pygame.Rect(-120, -120, SCREEN_W + 240, SCREEN_H + 240)):
@@ -2087,8 +2227,11 @@ class GameApp:
     def _draw_loot(self, snapshot: WorldSnapshot, camera: Vec2) -> None:
         player = self._local_player(snapshot)
         colors = {"weapon": CYAN, "ammo": YELLOW, "armor": PURPLE, "medkit": GREEN, "item": TEXT}
+        view = self.camera_controller.visible_world_rect(camera, margin=80.0)
         for item in snapshot.loot.values():
             if player and item.floor != player.floor:
+                continue
+            if not point_visible(item.pos, view):
                 continue
             if player and player.floor < 0 and not self._point_lit_by_flashlight(player, item.pos):
                 continue
@@ -2112,8 +2255,11 @@ class GameApp:
 
     def _draw_projectiles(self, snapshot: WorldSnapshot, camera: Vec2) -> None:
         player = self._local_player(snapshot)
+        view = self.camera_controller.visible_world_rect(camera, margin=120.0)
         for projectile in snapshot.projectiles.values():
             if player and projectile.floor != player.floor:
+                continue
+            if not point_visible(projectile.pos, view):
                 continue
             sx, sy = self._world_to_screen(projectile.pos, camera)
             tail = Vec2(projectile.pos.x - projectile.velocity.x * 0.025, projectile.pos.y - projectile.velocity.y * 0.025)
@@ -2123,8 +2269,11 @@ class GameApp:
 
     def _draw_grenades(self, snapshot: WorldSnapshot, camera: Vec2) -> None:
         player = self._local_player(snapshot)
+        view = self.camera_controller.visible_world_rect(camera, margin=420.0)
         for grenade in snapshot.grenades.values():
             if player and grenade.floor != player.floor:
+                continue
+            if not point_visible(grenade.pos, view):
                 continue
             spec = GRENADE_SPECS.get(grenade.kind, DEFAULT_GRENADE)
             sx, sy = self._world_to_screen(grenade.pos, camera)
@@ -2162,8 +2311,11 @@ class GameApp:
 
     def _draw_mines(self, snapshot: WorldSnapshot, camera: Vec2) -> None:
         player = self._local_player(snapshot)
+        view = self.camera_controller.visible_world_rect(camera, margin=320.0)
         for mine in snapshot.mines.values():
             if player and mine.floor != player.floor:
+                continue
+            if not point_visible(mine.pos, view):
                 continue
             sx, sy = self._world_to_screen(mine.pos, camera)
             if not (-180 <= sx <= SCREEN_W + 180 and -180 <= sy <= SCREEN_H + 180):
@@ -2220,8 +2372,11 @@ class GameApp:
 
     def _draw_poison(self, snapshot: WorldSnapshot, camera: Vec2) -> None:
         player = self._local_player(snapshot)
+        view = self.camera_controller.visible_world_rect(camera, margin=220.0)
         for pool in snapshot.poison_pools.values():
             if player and pool.floor != player.floor:
+                continue
+            if not point_visible(pool.pos, view):
                 continue
             sx, sy = self._world_to_screen(pool.pos, camera)
             radius = self._world_size(pool.radius * (0.72 + 0.12 * math.sin(snapshot.time * 6.0 + sx)), 8)
@@ -2233,6 +2388,8 @@ class GameApp:
         for spit in snapshot.poison_projectiles.values():
             if player and spit.floor != player.floor:
                 continue
+            if not point_visible(spit.pos, view):
+                continue
             sx, sy = self._world_to_screen(spit.pos, camera)
             pygame.draw.circle(self.screen, (28, 68, 24), (sx, sy), self._world_size(13, 6))
             pygame.draw.circle(self.screen, (104, 255, 112), (sx, sy), self._world_size(8, 4))
@@ -2240,8 +2397,11 @@ class GameApp:
 
     def _draw_zombies(self, snapshot: WorldSnapshot, camera: Vec2) -> None:
         player = self._local_player(snapshot)
+        view = self.camera_controller.visible_world_rect(camera, margin=900.0)
         for zombie in snapshot.zombies.values():
             if player and zombie.floor != player.floor:
+                continue
+            if not point_visible(zombie.pos, view):
                 continue
             spec = ZOMBIES[zombie.kind]
             sx, sy = self._world_to_screen(zombie.pos, camera)
@@ -2285,9 +2445,12 @@ class GameApp:
 
     def _draw_soldiers(self, snapshot: WorldSnapshot, camera: Vec2) -> None:
         player = self._local_player(snapshot)
+        view = self.camera_controller.visible_world_rect(camera, margin=900.0)
 
         for soldier in snapshot.soldiers.values():
             if player and soldier.floor != player.floor:
+                continue
+            if not point_visible(soldier.pos, view):
                 continue
 
             spec = SOLDIERS.get(soldier.kind)
@@ -2357,8 +2520,11 @@ class GameApp:
 
     def _draw_players(self, snapshot: WorldSnapshot, camera: Vec2) -> None:
         local = self._local_player(snapshot)
+        view = self.camera_controller.visible_world_rect(camera, margin=120.0)
         for player in snapshot.players.values():
             if local and player.floor != local.floor:
+                continue
+            if not point_visible(player.pos, view):
                 continue
             sx, sy = self._world_to_screen(player.pos, camera)
             if not player.alive:
@@ -3986,7 +4152,7 @@ class GameApp:
         start_rect = pygame.Rect(panel.right - 286, panel.bottom - 72, 230, 46)
         if back_rect.collidepoint(pos):
             self.single_map_dropdown_open = False
-            self.state = "menu"
+            self._set_state(AppState.MENU)
             return
         if start_rect.collidepoint(pos):
             self.single_map_dropdown_open = False
@@ -4322,20 +4488,7 @@ class GameApp:
         return True
 
     def _scaled_icon(self, key: str, size: tuple[int, int]) -> pygame.Surface | None:
-        source = self.item_images.get(key) or self.item_images.get(self.icon_mapping.get(key, ""))
-        if not source:
-            return None
-        max_w, max_h = max(1, size[0]), max(1, size[1])
-        source_w, source_h = source.get_size()
-        scale = min(max_w / max(1, source_w), max_h / max(1, source_h))
-        width = max(1, int(source_w * scale))
-        height = max(1, int(source_h * scale))
-        cache_key = (key, width, height)
-        icon = self._icon_cache.get(cache_key)
-        if icon is None:
-            icon = pygame.transform.smoothscale(source, (width, height))
-            self._icon_cache[cache_key] = icon
-        return icon
+        return self.assets.scaled_icon(key, size)
 
     def _icon_color(self, key: str) -> tuple[int, int, int]:
         if key == "heart":
