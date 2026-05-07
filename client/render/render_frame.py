@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 
 from shared.models import (
     BuildingState,
@@ -18,6 +19,32 @@ from shared.models import (
 )
 
 
+class RenderLOD(str, Enum):
+    FULL = "full"
+    SIMPLE = "simple"
+    DOT = "dot"
+
+
+@dataclass(frozen=True, slots=True)
+class ActorRenderItem:
+    id: str
+    actor_type: str
+    kind: str
+    x: float
+    y: float
+    floor: int
+    hp_ratio: float
+    armor_ratio: float
+    facing: float
+    radius: float
+    color: tuple[int, int, int]
+    lod: RenderLOD
+    is_local: bool = False
+    is_dead: bool = False
+    label: str = ""
+    mode: str = ""
+
+
 @dataclass(slots=True)
 class RenderFrame:
     snapshot: WorldSnapshot
@@ -32,4 +59,5 @@ class RenderFrame:
     zombies: tuple[ZombieState, ...]
     soldiers: tuple[SoldierState, ...]
     players: tuple[PlayerState, ...]
-
+    actor_lod: dict[str, RenderLOD]
+    actors: tuple[ActorRenderItem, ...]

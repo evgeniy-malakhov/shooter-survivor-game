@@ -9,6 +9,7 @@ from client.render import palette
 from client.render.render_context import RenderContext
 from client.render.ui.minimap_cache import MinimapCacheKey, MinimapStaticCache
 from shared.constants import MAP_HEIGHT, MAP_WIDTH
+from shared.level import tunnel_segments
 from shared.models import RectState, Vec2, WorldSnapshot
 
 ONLINE_MINIMAP_MIN_RADIUS = 1400.0
@@ -16,8 +17,8 @@ ONLINE_MINIMAP_MAX_RADIUS = 4200.0
 
 
 class MinimapRenderer:
-    def __init__(self) -> None:
-        self.cache = MinimapStaticCache()
+    def __init__(self, cache: MinimapStaticCache | None = None) -> None:
+        self.cache = cache or MinimapStaticCache()
 
     def render(self, ctx: RenderContext) -> None:
         started = time.perf_counter()
@@ -25,6 +26,8 @@ class MinimapRenderer:
             self.paint_minimap(ctx, ctx.snapshot)
         if ctx.perf:
             ctx.perf.minimap_ms = (time.perf_counter() - started) * 1000.0
+            ctx.perf.minimap_cache_hits = self.cache.hits
+            ctx.perf.minimap_cache_misses = self.cache.misses
 
     def rect(self, ctx: RenderContext) -> pygame.Rect:
         big = bool(ctx.overlay and ctx.overlay.minimap_big)
@@ -89,7 +92,22 @@ class MinimapRenderer:
         snapshot: WorldSnapshot,
         bounds: tuple[float, float, float, float],
     ) -> pygame.Surface:
-        key = MinimapCacheKey(rect.size, bounds, len(snapshot.buildings), (int(snapshot.map_width), int(snapshot.map_height)))
+        player = ctx.local_player
+        floor = int(player.floor) if player else 0
+        quantized_bounds = tuple(int(value // 256) for value in bounds)
+        key = MinimapCacheKey(
+            map_id=str(getattr(snapshot, "map_id", "default")),
+            size=rect.size,
+            scale=round(rect.w / max(1.0, bounds[2] - bounds[0]), 5),
+            mode="big" if ctx.overlay and ctx.overlay.minimap_big else "small",
+            floor=floor,
+            bounds=quantized_bounds,
+            static_signature=(
+                len(snapshot.buildings),
+                sum(len(building.walls) + len(building.doors) + len(building.props) for building in snapshot.buildings.values()),
+                int(snapshot.map_width) * 31 + int(snapshot.map_height),
+            ),
+        )
         cached = self.cache.get(key)
         if cached:
             return cached
@@ -108,6 +126,18 @@ class MinimapRenderer:
             )
             mini.clamp_ip(surface.get_rect())
             pygame.draw.rect(surface, (84, 95, 118), mini, 1)
+        for tunnel in tunnel_segments(snapshot.buildings):
+            if not self.rect_intersects_bounds(tunnel, bounds):
+                continue
+            mini = pygame.Rect(
+                int((tunnel.x - min_x) / span_x * rect.w),
+                int((tunnel.y - min_y) / span_y * rect.h),
+                max(2, int(tunnel.w / span_x * rect.w)),
+                max(2, int(tunnel.h / span_y * rect.h)),
+            )
+            mini.clamp_ip(surface.get_rect())
+            pygame.draw.rect(surface, (44, 66, 92), mini, 1)
+        pygame.draw.rect(surface, (78, 108, 140), surface.get_rect(), 1, border_radius=6)
         self.cache.set(key, surface)
         return surface
 

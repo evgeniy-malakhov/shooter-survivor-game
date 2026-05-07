@@ -34,6 +34,7 @@ class RenderContext:
     online_player_id: str | None = None
     now: float = 0.0
     render_frame: RenderFrame | None = None
+    render_snapshot_view: Any | None = None
     perf: ClientPerfStats | None = None
     effects: VisualEffectsState | None = None
     death_tuning: Any | None = None

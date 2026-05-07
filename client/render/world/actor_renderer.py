@@ -6,7 +6,7 @@ import pygame
 
 from client.render import palette
 from client.render.render_context import RenderContext
-from client.render.render_frame import RenderFrame
+from client.render.render_frame import ActorRenderItem, RenderFrame, RenderLOD
 from client.render.world.render_utils import (
     draw_bar,
     draw_text,
@@ -21,20 +21,44 @@ from shared.weapon_modules import WEAPON_MODULES
 
 class ActorRenderer:
     def render(self, ctx: RenderContext, frame: RenderFrame) -> None:
+        started = math.nan
+        if ctx.perf:
+            import time
+            started = time.perf_counter()
         self.paint_zombies(ctx, frame)
         self.paint_players(ctx, frame)
         self.paint_soldiers(ctx, frame)
         self.paint_weapon_utilities(ctx, frame)
         if ctx.local_player:
             self.paint_tunnel_darkness(ctx, ctx.local_player)
+        if ctx.perf:
+            import time
+            ctx.perf.actors_ms = (time.perf_counter() - started) * 1000.0
+
+    def lod(self, frame: RenderFrame, prefix: str, entity_id: str) -> RenderLOD:
+        return frame.actor_lod.get(f"{prefix}:{entity_id}", RenderLOD.FULL)
+
+    def screen_pos(self, ctx: RenderContext, item: ActorRenderItem) -> tuple[int, int]:
+        return ctx.camera_controller.world_to_screen_xy(item.x, item.y, ctx.camera)
+
+    def paint_actor_dot(self, ctx: RenderContext, center: tuple[int, int], color: tuple[int, int, int], radius: int = 4) -> None:
+        pygame.draw.circle(ctx.screen, (4, 7, 13), center, radius + 2)
+        pygame.draw.circle(ctx.screen, color, center, radius)
+        pygame.draw.circle(ctx.screen, palette.TEXT, center, radius, 1)
 
     def paint_zombies(self, ctx: RenderContext, frame: RenderFrame) -> None:
-        for zombie in frame.zombies:
+        for zombie in frame.actors:
+            if zombie.actor_type != "zombie":
+                continue
             spec = ZOMBIES.get(zombie.kind, ZOMBIES["walker"])
-            sx, sy = world_to_screen(ctx, zombie.pos)
+            sx, sy = self.screen_pos(ctx, zombie)
             if not (-80 <= sx <= ctx.screen.get_width() + 80 and -80 <= sy <= ctx.screen.get_height() + 80):
                 continue
-            if ctx.settings.get("bot_vision") and (ctx.settings.get("bot_vision_range") or zombie.mode in {"chase", "investigate", "search"}):
+            lod = zombie.lod
+            if lod == RenderLOD.DOT:
+                self.paint_actor_dot(ctx, (sx, sy), zombie.color, 3)
+                continue
+            if lod == RenderLOD.FULL and ctx.settings.get("bot_vision") and (ctx.settings.get("bot_vision_range") or zombie.mode in {"chase", "investigate", "search"}):
                 cone_len = spec.sight_range if ctx.settings.get("bot_vision_range") else min(spec.sight_range, 160)
                 cone_len_screen = world_size(ctx, cone_len, 1)
                 left = zombie.facing - math.radians(spec.fov_degrees * 0.5)
@@ -56,48 +80,65 @@ class ActorRenderer:
                     1,
                 )
                 ctx.screen.blit(cone, (0, 0))
-            radius = world_size(ctx, spec.radius, 8)
-            pygame.draw.circle(ctx.screen, (12, 18, 28), (sx, sy), world_size(ctx, spec.radius + 8, radius + 4))
-            pygame.draw.circle(ctx.screen, spec.color, (sx, sy), radius)
+            radius = world_size(ctx, zombie.radius, 8)
+            pygame.draw.circle(ctx.screen, (12, 18, 28), (sx, sy), world_size(ctx, zombie.radius + 8, radius + 4))
+            pygame.draw.circle(ctx.screen, zombie.color, (sx, sy), radius)
             pygame.draw.circle(ctx.screen, (255, 255, 255), (sx, sy), radius, 2)
-            nose_len = world_size(ctx, spec.radius + 12, radius + 4)
+            if lod == RenderLOD.SIMPLE:
+                if ctx.settings.get("health_bars"):
+                    draw_bar(ctx, pygame.Rect(sx - 16, sy - radius - 10, 32, 4), zombie.hp_ratio, palette.RED)
+                continue
+            nose_len = world_size(ctx, zombie.radius + 12, radius + 4)
             nose = (int(sx + math.cos(zombie.facing) * nose_len), int(sy + math.sin(zombie.facing) * nose_len))
             pygame.draw.line(ctx.screen, palette.TEXT, (sx, sy), nose, 2)
             if ctx.settings.get("health_bars"):
-                draw_bar(ctx, pygame.Rect(sx - 24, sy - radius - 15, 48, 5), zombie.health / max(1, spec.health), palette.RED)
-                if zombie.armor > 0:
-                    draw_bar(ctx, pygame.Rect(sx - 24, sy - radius - 8, 48, 4), zombie.armor / max(1, spec.armor), palette.CYAN)
+                draw_bar(ctx, pygame.Rect(sx - 24, sy - radius - 15, 48, 5), zombie.hp_ratio, palette.RED)
+                if zombie.armor_ratio > 0:
+                    draw_bar(ctx, pygame.Rect(sx - 24, sy - radius - 8, 48, 4), zombie.armor_ratio, palette.CYAN)
             if ctx.settings.get("ai_reactions"):
                 mode_color = palette.RED if zombie.mode == "chase" else palette.YELLOW if zombie.mode in {"investigate", "search"} else palette.MUTED
                 draw_text(ctx, zombie.mode, sx - 22, sy + radius + 8, mode_color, ctx.fonts.small if ctx.fonts else None)
 
     def paint_players(self, ctx: RenderContext, frame: RenderFrame) -> None:
-        active_id = ctx.local_player_id or ctx.online_player_id
-        for player in frame.players:
-            sx, sy = world_to_screen(ctx, player.pos)
-            if not player.alive:
+        for player in frame.actors:
+            if player.actor_type != "player":
+                continue
+            sx, sy = self.screen_pos(ctx, player)
+            if player.is_dead:
                 if not self._has_death_effect(ctx, "player", player.id):
                     self.paint_dead_player_cross(ctx, (sx, sy), 1.0, 210)
                 continue
-            color = palette.CYAN if player.id == active_id else palette.GREEN
+            lod = player.lod
+            color = player.color
+            if lod == RenderLOD.DOT:
+                self.paint_actor_dot(ctx, (sx, sy), color, 4)
+                continue
             body_radius = world_size(ctx, 24, 12)
             pygame.draw.circle(ctx.screen, (4, 8, 14), (sx, sy), world_size(ctx, 31, body_radius + 4))
             pygame.draw.circle(ctx.screen, color, (sx, sy), body_radius)
             pygame.draw.circle(ctx.screen, palette.TEXT, (sx, sy), body_radius, 2)
+            if lod == RenderLOD.SIMPLE:
+                continue
             muzzle_len = world_size(ctx, 42, 22)
-            muzzle = (int(sx + math.cos(player.angle) * muzzle_len), int(sy + math.sin(player.angle) * muzzle_len))
+            muzzle = (int(sx + math.cos(player.facing) * muzzle_len), int(sy + math.sin(player.facing) * muzzle_len))
             pygame.draw.line(ctx.screen, palette.TEXT, (sx, sy), muzzle, world_size(ctx, 5, 2))
-            draw_text(ctx, player.name, sx - 28, sy - 48, palette.TEXT, ctx.fonts.small if ctx.fonts else None)
+            draw_text(ctx, player.label, sx - 28, sy - 48, palette.TEXT, ctx.fonts.small if ctx.fonts else None)
 
     def paint_soldiers(self, ctx: RenderContext, frame: RenderFrame) -> None:
-        for soldier in frame.soldiers:
+        for soldier in frame.actors:
+            if soldier.actor_type != "soldier":
+                continue
             spec = SOLDIERS.get(soldier.kind)
             if not spec:
                 continue
-            sx, sy = world_to_screen(ctx, soldier.pos)
+            sx, sy = self.screen_pos(ctx, soldier)
             if not (-80 <= sx <= ctx.screen.get_width() + 80 and -80 <= sy <= ctx.screen.get_height() + 80):
                 continue
-            radius = world_size(ctx, spec.radius, 9)
+            lod = soldier.lod
+            if lod == RenderLOD.DOT:
+                self.paint_actor_dot(ctx, (sx, sy), soldier.color, 4)
+                continue
+            radius = world_size(ctx, soldier.radius, 9)
             points = []
             for i in range(5):
                 angle = soldier.facing - math.pi / 2 + math.tau * i / 5
@@ -106,18 +147,24 @@ class ActorRenderer:
             pygame.draw.polygon(ctx.screen, (7, 12, 22), [(x + 2, y + 2) for x, y in points])
             pygame.draw.polygon(ctx.screen, (44, 124, 255), points)
             pygame.draw.polygon(ctx.screen, (184, 220, 255), points, 2)
-            muzzle_len = world_size(ctx, spec.radius + 18, radius + 8)
+            if lod == RenderLOD.SIMPLE:
+                if ctx.settings.get("health_bars"):
+                    draw_bar(ctx, pygame.Rect(sx - 16, sy - radius - 10, 32, 4), soldier.hp_ratio, palette.GREEN)
+                continue
+            muzzle_len = world_size(ctx, soldier.radius + 18, radius + 8)
             muzzle = (int(sx + math.cos(soldier.facing) * muzzle_len), int(sy + math.sin(soldier.facing) * muzzle_len))
             pygame.draw.line(ctx.screen, (210, 235, 255), (sx, sy), muzzle, 2)
             if ctx.settings.get("health_bars"):
-                draw_bar(ctx, pygame.Rect(sx - 24, sy - radius - 15, 48, 5), soldier.health / max(1, spec.health), palette.GREEN)
-                if soldier.armor > 0:
-                    draw_bar(ctx, pygame.Rect(sx - 24, sy - radius - 8, 48, 4), soldier.armor / max(1, spec.armor), palette.CYAN)
+                draw_bar(ctx, pygame.Rect(sx - 24, sy - radius - 15, 48, 5), soldier.hp_ratio, palette.GREEN)
+                if soldier.armor_ratio > 0:
+                    draw_bar(ctx, pygame.Rect(sx - 24, sy - radius - 8, 48, 4), soldier.armor_ratio, palette.CYAN)
             if ctx.settings.get("ai_reactions"):
                 draw_text(ctx, soldier.mode, sx - 24, sy + radius + 8, palette.CYAN, ctx.fonts.small if ctx.fonts else None)
 
     def paint_weapon_utilities(self, ctx: RenderContext, frame: RenderFrame) -> None:
         for player in frame.players:
+            if self.lod(frame, "player", player.id) != RenderLOD.FULL:
+                continue
             weapon = player.active_weapon()
             if not weapon or not weapon.utility_on:
                 continue

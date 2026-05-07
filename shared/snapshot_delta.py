@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from copy import deepcopy
 from typing import Any
 
 
@@ -35,7 +34,7 @@ def make_snapshot_delta(current: dict[str, Any], previous: dict[str, Any]) -> di
 
 
 def apply_snapshot_delta(base: dict[str, Any], delta: dict[str, Any]) -> dict[str, Any]:
-    merged = deepcopy(base)
+    merged = dict(base)
     for key in SCALAR_KEYS:
         if key in delta:
             merged[key] = delta[key]
@@ -43,10 +42,8 @@ def apply_snapshot_delta(base: dict[str, Any], delta: dict[str, Any]) -> dict[st
         patch = delta.get(collection)
         if not isinstance(patch, dict):
             continue
-        target = merged.setdefault(collection, {})
-        if not isinstance(target, dict):
-            target = {}
-            merged[collection] = target
+        target = dict(_collection(base, collection))
+        merged[collection] = target
         for entity_id in patch.get("r", []):
             target.pop(str(entity_id), None)
         for entity_id, entity in patch.get("u", {}).items():

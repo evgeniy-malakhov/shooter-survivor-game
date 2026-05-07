@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pygame
 
+from client.core.surface_cache import IconScaleCache
+
 
 @dataclass(slots=True)
 class LoadingAssets:
@@ -27,11 +29,11 @@ class ClientAssets:
         self.icon_mapping = self.load_icon_mapping()
         self.item_images = self.load_item_images()
         self.loading = self.load_loading_assets()
-        self._scaled_icon_cache: dict[tuple[str, int, int], pygame.Surface] = {}
+        self.scale_cache = IconScaleCache()
 
     @property
     def icon_cache(self) -> dict[tuple[str, int, int], pygame.Surface]:
-        return self._scaled_icon_cache
+        return self.scale_cache.raw
 
     def load_icon_mapping(self) -> dict[str, str]:
         mapping = dict(self.default_icon_mapping)
@@ -100,9 +102,13 @@ class ClientAssets:
         scale = min(max_w / max(1, source_w), max_h / max(1, source_h))
         width = max(1, int(source_w * scale))
         height = max(1, int(source_h * scale))
-        cache_key = (key, width, height)
-        icon = self._scaled_icon_cache.get(cache_key)
-        if icon is None:
-            icon = pygame.transform.smoothscale(source, (width, height))
-            self._scaled_icon_cache[cache_key] = icon
-        return icon
+        return self.scale_cache.get_or_create(
+            key,
+            (width, height),
+            lambda: pygame.transform.smoothscale(source, (width, height)),
+        )
+
+    def warm_scaled_icons(self, sizes: tuple[tuple[int, int], ...] = ((24, 24), (28, 28), (34, 34), (40, 40), (54, 54), (72, 72))) -> None:
+        for key in tuple(self.item_images.keys()):
+            for size in sizes:
+                self.scaled_icon(key, size)

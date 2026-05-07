@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import gc
 import threading
 import time
 from dataclasses import dataclass
@@ -10,6 +11,7 @@ from pathlib import Path
 import pygame
 
 from client.app.app_state import AppState, normalize_app_state
+from client.app.navigation import AppNavigation
 from client.audio import AudioManager
 from client.audio_config import load_audio_tuning
 from client.controllers.overlay_state import GameplayOverlayState
@@ -18,14 +20,20 @@ from client.core.camera import CameraController
 from client.core.display import DisplayConfig, DisplayManager
 from client.core.perf import ClientPerfStats
 from client.death_effects import load_death_effect_tuning
+from client.effects.effect_pool import DictEffectPool
 from client.effects.visual_effects_state import VisualEffectsState
+from client.game.render_frame_cache import RenderFrameCacheKey
+from client.game.snapshot_render_adapter import SnapshotRenderAdapter
 from client.input.action_buffer import ClientActionBuffer
 from client.network import OnlineClient, ping_server
+from client.perf.frame_budget import FrameBudgetController
 from client.render.render_context import RenderContext
 from client.render.render_frame import RenderFrame
 from client.render.render_frame_builder import RenderFrameBuilder
 from client.render.render_resources import RenderFonts, RenderText
+from client.render.ui.minimap_cache import MinimapStaticCache
 from client.render.ui.text_cache import TextCache
+from client.render.world.static_world_cache import StaticWorldChunkCache
 from client.visibility.render_culling import point_visible, rect_visible
 from client.scenes.gameplay_scene import GameplayScene
 from client.scenes.loading_scene import LoadingScene
@@ -171,9 +179,11 @@ class GameApp:
         self._prev_grenade_state: dict[str, tuple[Vec2, int, str]] = {}
         self._prev_mine_state: dict[str, tuple[Vec2, int, str]] = {}
         self._explosion_effects: list[dict[str, object]] = []
+        self._explosion_effect_pool = DictEffectPool()
         self._join_notifications: list[dict[str, object]] = []
         self.death_effects = load_death_effect_tuning()
         self._death_effects: list[dict[str, object]] = []
+        self._death_effect_pool = DictEffectPool()
         self.visual_effects = VisualEffectsState(
             damage_flash=self.damage_flash,
             explosion_effects=self._explosion_effects,
@@ -191,9 +201,18 @@ class GameApp:
         self._last_empty_sound_at = 0.0
         self.overlay_state = GameplayOverlayState()
         self.perf_stats = ClientPerfStats()
+        self.frame_budget = FrameBudgetController()
+        self._gc_callback_started_at: float | None = None
+        self.gc_pacing_enabled = False
         self.render_frame_builder = RenderFrameBuilder()
+        self.snapshot_render_adapter = SnapshotRenderAdapter()
+        self._render_frame_cache_key: RenderFrameCacheKey | None = None
+        self._render_frame_cache: RenderFrame | None = None
         self.text_cache = TextCache()
+        self.static_world_cache = StaticWorldChunkCache()
+        self.minimap_static_cache = MinimapStaticCache()
         self.show_perf_overlay = False
+        self.detailed_perf_overlay = False
         self.scoreboard_scroll = 0
         saved_settings = self._load_client_settings()
         self.camera_distance = max(0.78, min(1.08, float(saved_settings.get("camera_distance", 0.92))))
@@ -215,6 +234,7 @@ class GameApp:
         self.audio.set_effects_volume(self.effects_volume)
         self.app_state = AppState.MENU
         self.state = self.app_state.value
+        self.navigation = AppNavigation(self)
         self.player_name = self._clean_player_name(str(saved_settings.get("player_name", "Operator")))
         self.name_editing = False
         self.name_input = self.player_name
@@ -236,18 +256,6 @@ class GameApp:
         self.craft_scroll = 0
         self.weapon_modules_scroll = 0
         self.running = True
-        self.pending_reload = False
-        self.pending_pickup = False
-        self.pending_medkit = False
-        self.pending_interact = False
-        self.pending_respawn = False
-        self.pending_throw_grenade = False
-        self.pending_toggle_utility = False
-        self.pending_inventory_action: dict[str, object] | None = None
-        self.pending_craft_key: str | None = None
-        self.pending_repair_slot: str | None = None
-        self.pending_slot: str | None = None
-        self.pending_equip_armor: str | None = None
         self._local_command_id = 0
         self.drag_source: dict[str, object] | None = None
         self.custom_weapon_slot = "1"
@@ -307,7 +315,7 @@ class GameApp:
             state_getter=lambda: self.state,
             state_setter=self._set_state,
             on_quit=self._request_quit,
-            on_resize=self._handle_display_resize,
+            on_resize=self._on_display_resize,
         )
         manager.register(AppState.MENU, MenuScene(self))
         manager.register(AppState.OPTIONS, OptionsScene(self))
@@ -413,7 +421,7 @@ class GameApp:
     def _request_quit(self) -> None:
         self.running = False
 
-    def _handle_display_resize(self, size: tuple[int, int]) -> None:
+    def _on_display_resize(self, size: tuple[int, int]) -> None:
         if self.fullscreen:
             return
         self.display_manager.resize_window(size)
@@ -532,6 +540,9 @@ class GameApp:
         return localized if localized != f"rarity.{key}" else rarity_spec(key).title
 
     def run(self) -> None:
+        gc_was_enabled = gc.isenabled()
+        if self.gc_pacing_enabled:
+            gc.disable()
         while self.running:
             frame_start = time.perf_counter()
             dt = self.clock.tick(FPS) / 1000.0
@@ -540,38 +551,105 @@ class GameApp:
             update_start = time.perf_counter()
             self.scene_manager.update(dt)
             self.perf_stats.update_ms = (time.perf_counter() - update_start) * 1000.0
+            self.perf_stats.scene_update_ms = self.perf_stats.update_ms
             ctx = self._current_render_context(dt)
+            render_start = time.perf_counter()
             self.scene_manager.render(ctx)
-            if self.show_perf_overlay:
+            self.perf_stats.scene_render_ms = (time.perf_counter() - render_start) * 1000.0
+            if self.show_perf_overlay or self.detailed_perf_overlay:
                 self._draw_perf_overlay()
             self._present()
             self.perf_stats.frame_ms = (time.perf_counter() - frame_start) * 1000.0
+            self._update_runtime_perf_telemetry()
+        if self.gc_pacing_enabled and gc_was_enabled:
+            gc.enable()
         if self.world:
             self.world.close()
         self.online.close()
         self.audio.close()
         pygame.quit()
 
+    def _update_runtime_perf_telemetry(self) -> None:
+        counts = gc.get_count()
+        self.perf_stats.gc_count_0 = counts[0]
+        self.perf_stats.gc_count_1 = counts[1]
+        self.perf_stats.gc_count_2 = counts[2]
+        self.perf_stats.gc_time_ms = 0.0
+        self.perf_stats.frame_alloc_estimate = (
+            len(self.render_frame_builder.scratch.spatial_items)
+            + len(self.render_frame_builder.scratch.actor_items)
+            + len(self._explosion_effects)
+            + len(self._death_effects)
+        )
+        self.perf_stats.effect_pool_active = self._explosion_effect_pool.active + self._death_effect_pool.active
+        self.perf_stats.effect_pool_free = self._explosion_effect_pool.free_count + self._death_effect_pool.free_count
+        budget = self.frame_budget.observe(self.perf_stats.frame_ms, self.perf_stats.draw_world_ms)
+        self.perf_stats.frame_p95_ms = budget.p95_ms
+        self.perf_stats.frame_p99_ms = budget.p99_ms
+        self.perf_stats.over_budget_frames = budget.over_budget_frames
+        self.perf_stats.suggested_lod_bias = budget.suggested_lod_bias
+        self.perf_stats.suggested_render_radius_scale = budget.suggested_render_radius_scale
+        if self.gc_pacing_enabled and self.state in {"menu", "options", "single_setup", "single_loading", "servers"}:
+            started = time.perf_counter()
+            gc.collect(0)
+            self.perf_stats.gc_time_ms = (time.perf_counter() - started) * 1000.0
+
     def _current_render_context(self, dt: float) -> RenderContext:
         prepare_start = time.perf_counter()
         snapshot = self._snapshot()
         player = self._local_player(snapshot)
         camera = self._camera(player)
-        render_frame = self._build_render_frame(snapshot, player, camera)
+        snapshot_tick = self._snapshot_tick(snapshot)
+        render_frame = self._build_render_frame(snapshot, player, camera, snapshot_tick)
+        render_view = self.snapshot_render_adapter.from_world_snapshot(snapshot, snapshot_tick) if snapshot else None
         self.perf_stats.render_prepare_ms = (time.perf_counter() - prepare_start) * 1000.0
-        return self._build_render_context(snapshot, player, camera, dt, render_frame)
+        return self._build_render_context(snapshot, player, camera, dt, render_frame, render_view)
 
     def _build_render_frame(
         self,
         snapshot: WorldSnapshot | None,
         player: PlayerState | None,
         camera: Vec2,
+        snapshot_tick: int,
     ) -> RenderFrame | None:
         if not snapshot:
             self.perf_stats.reset_visible_counts()
+            self._render_frame_cache_key = None
+            self._render_frame_cache = None
             return None
         view = self.camera_controller.visible_world_rect(camera, margin=360.0)
-        return self.render_frame_builder.build(snapshot, view, player, self.perf_stats)
+        cache_key = self._render_frame_cache_key_for(snapshot_tick, camera, player)
+        if (
+            self.state == "online_game"
+            and self._render_frame_cache_key == cache_key
+            and self._render_frame_cache is not None
+            and self.online.online_perf().pending_inputs == 0
+        ):
+            return self._render_frame_cache
+        frame = self.render_frame_builder.build(snapshot, view, player, self.perf_stats)
+        if self.state == "online_game":
+            self._render_frame_cache_key = cache_key
+            self._render_frame_cache = frame
+        return frame
+
+    def _snapshot_tick(self, snapshot: WorldSnapshot | None) -> int:
+        if self.state == "online_game":
+            return self.online.snapshot_tick()
+        return int((snapshot.time if snapshot else 0.0) * 1000.0)
+
+    def _render_frame_cache_key_for(
+        self,
+        snapshot_tick: int,
+        camera: Vec2,
+        player: PlayerState | None,
+    ) -> RenderFrameCacheKey:
+        return RenderFrameCacheKey(
+            snapshot_tick=snapshot_tick,
+            camera_cell_x=int(camera.x // 512),
+            camera_cell_y=int(camera.y // 512),
+            floor=player.floor if player else 0,
+            zoom_bucket=int(round(self.camera_zoom * 100.0)),
+        )
 
     def _sync_display_refs(self) -> None:
         self.fullscreen = self.display_manager.fullscreen
@@ -603,386 +681,6 @@ class GameApp:
         self.display_manager.present()
         self._sync_display_refs()
 
-    def _handle_events(self) -> None:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                self.running = False
-            elif event.type == pygame.VIDEORESIZE and not self.fullscreen:
-                self.display_manager.resize_window((int(event.w), int(event.h)))
-                self._sync_display_refs()
-            elif event.type == pygame.KEYDOWN:
-                self._handle_keydown(event)
-            elif event.type == pygame.MOUSEBUTTONDOWN:
-                self._handle_mouse_down(event)
-            elif event.type == pygame.MOUSEBUTTONUP:
-                self._handle_mouse_up(event)
-            elif event.type == pygame.MOUSEMOTION:
-                self._handle_mouse_motion(event)
-            elif event.type == pygame.MOUSEWHEEL:
-                self._handle_mouse_wheel(event)
-
-    def _handle_keydown(self, event: pygame.event.Event) -> None:
-        key = event.key
-        if key == pygame.K_F3:
-            self.show_perf_overlay = not self.show_perf_overlay
-            return
-        if self.name_editing:
-            if key in (pygame.K_RETURN, pygame.K_KP_ENTER):
-                self._commit_player_name()
-            elif key == pygame.K_ESCAPE:
-                self.name_input = self.player_name
-                self.name_editing = False
-            elif key == pygame.K_BACKSPACE:
-                self.name_input = self.name_input[:-1]
-            elif len(self.name_input) < 18 and event.unicode and event.unicode.isprintable():
-                self.name_input += event.unicode
-            return
-        if key == pygame.K_ESCAPE:
-            if self.weapon_custom_open:
-                self.weapon_custom_open = False
-            elif self.backpack_open or self.inventory_open or self.settings_open or self.craft_open:
-                self.backpack_open = False
-                self.inventory_open = False
-                self.settings_open = False
-                self.craft_open = False
-            elif self.state == "servers":
-                self._back_to_menu()
-            elif self.state in {"options", "single_setup"}:
-                self._set_state(AppState.MENU)
-            elif self.state == "single_loading" and self.loading_error:
-                self._set_state(AppState.SINGLE_SETUP)
-            elif self.state in {"single", "online_game"}:
-                self.settings_open = True
-            return
-        if self.state not in {"single", "online_game"}:
-            return
-        if key in (pygame.K_i, pygame.K_b):
-            opening = not self.backpack_open
-            self.backpack_open = opening
-            self.inventory_open = opening
-            if opening:
-                self.craft_open = False
-                self.weapon_custom_open = False
-                self.drag_source = None
-        elif key == pygame.K_o:
-            self.settings_open = not self.settings_open
-        elif key == pygame.K_c:
-            if self.weapon_custom_open:
-                return
-            opening = not self.craft_open
-            self.craft_open = opening
-            if opening:
-                self.backpack_open = False
-                self.inventory_open = False
-                self.drag_source = None
-        elif key == pygame.K_r:
-            self._queue_client_action("reload")
-        elif key == pygame.K_e:
-            self._queue_client_action("pickup")
-        elif key == pygame.K_f:
-            self._queue_client_action("interact")
-        elif key == pygame.K_q:
-            self._queue_client_action("toggle_utility")
-        elif key == pygame.K_SPACE:
-            self._queue_client_action("respawn")
-        elif key == pygame.K_g:
-            self._queue_client_action("throw_grenade")
-        elif key == pygame.K_m:
-            self.minimap_big = not self.minimap_big
-        elif key in (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5, pygame.K_6, pygame.K_7, pygame.K_8, pygame.K_9):
-            self._queue_client_action("select_slot", {"slot": str(key - pygame.K_0)})
-        elif key == pygame.K_0:
-            self._queue_client_action("select_slot", {"slot": "0"})
-
-    def _handle_mouse_down(self, event: pygame.event.Event) -> None:
-        pos = self._display_to_screen(event.pos)
-        if event.button == 1 and self._settings_audio_active():
-            if self._begin_audio_slider_drag(pos):
-                return
-        if self.weapon_custom_open and event.button in (4, 5):
-            if self._weapon_module_viewport_rect().collidepoint(pos):
-                self._scroll_weapon_modules(-1 if event.button == 4 else 1)
-                return
-        if self.craft_open and event.button in (4, 5):
-            self._scroll_crafting(-1 if event.button == 4 else 1)
-            return
-        if self.backpack_open and self.state in {"single", "online_game"}:
-            snapshot = self._snapshot()
-            player = self._local_player(snapshot) if snapshot else None
-            if self.weapon_custom_open:
-                if event.button == 1 and self._handle_weapon_custom_click(pos, player):
-                    return
-                if event.button == 1:
-                    self.drag_source = self._inventory_target_at(pos, player)
-                return
-            elif event.button == 1 and self._customize_button_rect().collidepoint(pos):
-                self.custom_weapon_slot = self._custom_weapon_slot(player)
-                self.weapon_custom_open = True
-                self.weapon_modules_scroll = 0
-                self.drag_source = None
-                return
-            repair_slot = self._repair_slot_at(pos)
-            if repair_slot:
-                self.pending_repair_slot = repair_slot
-                return
-            if event.button == 1:
-                self.drag_source = self._inventory_target_at(pos, player)
-            elif event.button == 3:
-                target = self._inventory_target_at(pos, player)
-                if target and target.get("source") == "backpack":
-                    self.pending_inventory_action = {"type": "use", "index": target["index"]}
-            return
-        if event.button == 1:
-            self._handle_click(pos)
-
-    def _handle_mouse_up(self, event: pygame.event.Event) -> None:
-        if event.button != 1:
-            return
-        pos = self._display_to_screen(event.pos)
-        if self._dragging_audio_slider:
-            self._update_audio_slider_from_pos(self._dragging_audio_slider, pos, save=True)
-            self._dragging_audio_slider = None
-            return
-        if self.settings_open:
-            self._handle_settings_click(pos)
-            return
-        if self.craft_open:
-            self._handle_craft_click(pos)
-            return
-        if self.backpack_open and self.drag_source:
-            snapshot = self._snapshot()
-            player = self._local_player(snapshot) if snapshot else None
-            target = self._inventory_target_at(pos, player)
-            drop_rect = self._drop_rect()
-            outside_panel = not self._backpack_panel_rect().collidepoint(pos)
-            should_drop = bool(self._dragged_payload(player) and (drop_rect.collidepoint(pos) or outside_panel))
-            if target:
-                if target["source"] == "module_return" and self.drag_source["source"] == "weapon_module":
-                    self.pending_inventory_action = {
-                        "type": "unequip_module",
-                        "slot": self.drag_source["slot"],
-                        "module_slot": self.drag_source["module_slot"],
-                    }
-                elif target["source"] == "module_return":
-                    pass
-                elif self._is_repair_drag(player, self.drag_source):
-                    self.pending_inventory_action = self._repair_drag_action(self.drag_source, target)
-                elif self.drag_source["source"] == "weapon_slot" and target["source"] == "weapon_slot":
-                    self.pending_inventory_action = {"type": "quick_swap", "a": self.drag_source["slot"], "b": target["slot"]}
-                else:
-                    payload = self._dragged_payload(player)
-                    payload_key = payload[0] if payload else ""
-                    dst = "weapon_slot" if target["source"] == "weapon_slot" and payload_key in WEAPONS else "quick_item" if target["source"] == "weapon_slot" else target["source"]
-                    action = {"type": "move", "src": self.drag_source["source"], "dst": dst}
-                    if self.drag_source["source"] == "backpack":
-                        action["src_index"] = self.drag_source["index"]
-                    elif self.drag_source["source"] == "weapon_module":
-                        action["src_slot"] = self.drag_source["slot"]
-                        action["src_module"] = self.drag_source["module_slot"]
-                    else:
-                        action["src_slot"] = self.drag_source["slot"]
-                    if dst == "backpack":
-                        action["dst_index"] = target["index"]
-                    elif dst == "weapon_module":
-                        action["dst_slot"] = target["slot"]
-                        action["dst_module"] = target["module_slot"]
-                    elif dst in {"equipment", "quick_item"}:
-                        action["dst_slot"] = target["slot"]
-                    self.pending_inventory_action = action
-            elif should_drop:
-                action = {"type": "drop", "source": self.drag_source["source"]}
-                if self.drag_source["source"] == "backpack":
-                    action["index"] = self.drag_source["index"]
-                elif self.drag_source["source"] == "weapon_module":
-                    action["slot"] = self.drag_source["slot"]
-                    action["module_slot"] = self.drag_source["module_slot"]
-                else:
-                    action["slot"] = self.drag_source["slot"]
-                self.pending_inventory_action = action
-            self.drag_source = None
-
-    def _handle_mouse_motion(self, event: pygame.event.Event) -> None:
-        if not self._dragging_audio_slider:
-            return
-        pos = self._display_to_screen(event.pos)
-        self._update_audio_slider_from_pos(self._dragging_audio_slider, pos, save=False)
-
-    def _handle_mouse_wheel(self, event: pygame.event.Event) -> None:
-        if self.weapon_custom_open and self.backpack_open and self._weapon_module_viewport_rect().collidepoint(self._mouse_pos()):
-            self._scroll_weapon_modules(-event.y)
-            return
-        if self.craft_open:
-            self._scroll_crafting(-event.y)
-            return
-        if self.state == "options":
-            self._scroll_options(-event.y)
-            return
-        if self.settings_open and self.state in {"single", "online_game"}:
-            self._scroll_options(-event.y)
-            return
-        if self.backpack_open:
-            return
-        if self.state in {"single", "online_game"} and pygame.key.get_pressed()[pygame.K_TAB]:
-            self._scroll_scoreboard(-event.y)
-
-    def _handle_click(self, pos: tuple[int, int]) -> None:
-        if self.state == "menu":
-            return
-        elif self.state == "options":
-            self._handle_settings_click(pos)
-        elif self.state == "single_setup":
-            self._handle_single_setup_click(pos)
-        elif self.state == "servers":
-            self._handle_server_click(pos)
-        elif self.inventory_open and self.state in {"single", "online_game"}:
-            self._handle_inventory_click(pos)
-
-    def _handle_settings_click(self, pos: tuple[int, int]) -> None:
-        if self.state == "options":
-            self._handle_options_click(pos)
-            return
-        if self.state in {"single", "online_game"}:
-            self._handle_pause_settings_click(pos)
-            return
-
-    def _handle_pause_settings_click(self, pos: tuple[int, int]) -> None:
-        if self._settings_resume_rect().collidepoint(pos):
-            self.settings_open = False
-            return
-        if self._settings_main_menu_rect().collidepoint(pos):
-            self._back_to_menu()
-            return
-        panel = self._settings_panel_rect()
-        for index, tab in enumerate(self.settings_tabs):
-            rect = pygame.Rect(panel.x + 32 + index * 112, panel.y + 106, 102, 36)
-            if rect.collidepoint(pos):
-                self.settings_tab = tab
-                self.options_scroll = 0
-                return
-        self._handle_options_click(pos)
-
-    def _handle_options_click(self, pos: tuple[int, int]) -> None:
-        panel = self._settings_panel_rect()
-        if self._settings_back_rect().collidepoint(pos):
-            if self.name_editing:
-                self._commit_player_name()
-            self._set_state(AppState.MENU)
-            return
-        for index, tab in enumerate(self.settings_tabs):
-            rect = pygame.Rect(panel.x + 32 + index * 112, panel.y + 106, 102, 36)
-            if rect.collidepoint(pos):
-                self.settings_tab = tab
-                self.options_scroll = 0
-                return
-        if tab_is_stub(self.settings_tab):
-            return
-        viewport = pygame.Rect(panel.x + 36, panel.y + 162, panel.w - 72, panel.h - 238)
-        if not viewport.collidepoint(pos):
-            return
-        if tab_has_audio_sliders(self.settings_tab):
-            self._begin_audio_slider_drag(pos)
-            return
-        options = tab_toggle_keys(self.settings_tab)
-        step_y = 56
-        option_height = 44
-        option_x = viewport.x + 6
-        option_width = viewport.w - 24
-        for index, key in enumerate(options):
-            y = viewport.y + index * step_y - self.options_scroll
-            rect = pygame.Rect(option_x, y, option_width, option_height)
-            if rect.collidepoint(pos):
-                if key == "fullscreen":
-                    self._toggle_fullscreen()
-                else:
-                    self.settings[key] = not self.settings[key]
-                    if key == "show_zombie_count":
-                        self._save_client_settings()
-                return
-        row_index = len(options)
-        if tab_has_camera_distance(self.settings_tab):
-            camera_rect = pygame.Rect(option_x, viewport.y + row_index * step_y - self.options_scroll, option_width, option_height)
-            if camera_rect.collidepoint(pos):
-                cycle = [1.0, 0.92, 0.84]
-                nearest = min(cycle, key=lambda value: abs(value - self.camera_distance))
-                self.camera_distance = cycle[(cycle.index(nearest) + 1) % len(cycle)]
-                self._save_client_settings()
-                return
-            row_index += 1
-        if tab_has_language(self.settings_tab):
-            language_rect = pygame.Rect(option_x, viewport.y + row_index * step_y - self.options_scroll, option_width, option_height)
-            if not language_rect.collidepoint(pos):
-                return
-            languages = sorted(self.locales)
-            self.language = languages[(languages.index(self.language) + 1) % len(languages)]
-            self._save_client_settings()
-
-    def _handle_craft_click(self, pos: tuple[int, int]) -> None:
-        if self._craft_scroll_track_rect().collidepoint(pos):
-            self._set_craft_scroll_from_pointer(pos[1])
-            return
-        if not self._craft_viewport_rect().collidepoint(pos):
-            return
-        for index, recipe_key in enumerate(RECIPES):
-            if self._craft_recipe_rect(index).collidepoint(pos):
-                self.pending_craft_key = recipe_key
-
-    def _handle_weapon_custom_click(self, pos: tuple[int, int], player: PlayerState | None) -> bool:
-        if self._weapon_custom_close_rect().collidepoint(pos):
-            self.weapon_custom_open = False
-            self.drag_source = None
-            return True
-        if not player:
-            return False
-        for index, slot in enumerate(SLOTS):
-            rect = self._weapon_custom_slot_rect(index)
-            if rect.collidepoint(pos) and player.weapons.get(slot):
-                self.custom_weapon_slot = slot
-                return True
-        weapon_slot = self._custom_weapon_slot(player)
-        viewport = self._weapon_module_viewport_rect()
-        for module_key, indices in self._available_module_groups(player):
-            rect = self._available_module_rect(module_key)
-            module = WEAPON_MODULES.get(module_key)
-            if viewport.collidepoint(pos) and rect.collidepoint(pos) and module and indices and player.weapons.get(weapon_slot):
-                self.pending_inventory_action = {
-                    "type": "move",
-                    "src": "backpack",
-                    "dst": "weapon_module",
-                    "src_index": indices[0],
-                    "dst_slot": weapon_slot,
-                    "dst_module": module.slot,
-                }
-                return True
-        return False
-
-    def _handle_server_click(self, pos: tuple[int, int]) -> None:
-        if pygame.Rect(72, 632, 180, 46).collidepoint(pos):
-            self._back_to_menu()
-        if pygame.Rect(270, 632, 180, 46).collidepoint(pos):
-            self._refresh_pings()
-        if pygame.Rect(470, 632, 180, 46).collidepoint(pos):
-            self._connect_selected_server()
-        for index, _entry in enumerate(self.server_entries):
-            row = pygame.Rect(72, 190 + index * 72, 720, 56)
-            if row.collidepoint(pos):
-                self.selected_server = index
-
-    def _handle_inventory_click(self, pos: tuple[int, int]) -> None:
-        snapshot = self._snapshot()
-        player = self._local_player(snapshot) if snapshot else None
-        if not player:
-            return
-        panel = pygame.Rect(260, 110, 760, 540)
-        if not panel.collidepoint(pos):
-            return
-        armor_y = panel.y + 292
-        for index, armor_key in enumerate(player.owned_armors):
-            rect = pygame.Rect(panel.x + 42 + index * 172, armor_y, 152, 46)
-            if rect.collidepoint(pos):
-                self.pending_equip_armor = armor_key
-        if pygame.Rect(panel.x + 42, panel.y + 442, 158, 46).collidepoint(pos):
-            self.pending_medkit = True
-
     def _update(self, dt: float) -> None:
         self._sync_menu_music()
         self._finish_single_loading_if_ready()
@@ -993,22 +691,22 @@ class GameApp:
 
         if self.state == "single" and self.world and self.local_player_id:
             if self.settings_open or self.backpack_open or self.craft_open or self.weapon_custom_open:
-                self._dispatch_pending_commands(self.local_player_id)
-                command = self._build_input(self.local_player_id)
+                self._dispatch_action_buffer(self.local_player_id)
+                command = self._legacy_input_command(self.local_player_id)
                 self.world.set_input(command)
                 self.world.update(0.0)
                 self._update_camera_zoom(dt)
                 self._update_damage_feedback(dt)
                 return
-            self._dispatch_pending_commands(self.local_player_id)
-            command = self._build_input(self.local_player_id)
+            self._dispatch_action_buffer(self.local_player_id)
+            command = self._legacy_input_command(self.local_player_id)
             self.world.set_input(command)
             self.world.update(dt)
         elif self.state == "online_game" and self.online.player_id:
-            self._dispatch_pending_commands(self.online.player_id)
-            command = self._build_input(self.online.player_id)
+            self._dispatch_action_buffer(self.online.player_id)
+            command = self._legacy_input_command(self.online.player_id)
             self.online.send_input(command)
-            self._handle_online_events()
+            self._process_online_events()
         self._update_camera_zoom(dt)
         self._update_damage_feedback(dt)
 
@@ -1204,7 +902,7 @@ class GameApp:
         pan = max(-1.0, min(1.0, dx / max(240.0, max_distance * 0.42)))
         return volume, pan
 
-    def _handle_online_events(self) -> None:
+    def _process_online_events(self) -> None:
         if self.state != "online_game":
             return
         for event in self.online.poll_events():
@@ -1301,22 +999,24 @@ class GameApp:
         seed_text = f"{key}:{kind}:{name}"
         seed = sum((index + 1) * ord(char) for index, char in enumerate(seed_text))
         self._death_effects.append(
-            {
-                "key": key,
-                "entity_type": entity_type,
-                "entity_id": entity_id,
-                "kind": kind,
-                "name": name,
-                "pos": pos.copy(),
-                "floor": int(floor),
-                "facing": float(facing),
-                "started": now,
-                "seed": seed,
-            }
+            self._death_effect_pool.acquire(
+                key=key,
+                entity_type=entity_type,
+                entity_id=entity_id,
+                kind=kind,
+                name=name,
+                pos=pos.copy(),
+                floor=int(floor),
+                facing=float(facing),
+                started=now,
+                seed=seed,
+            )
         )
         max_effects = max(1, int(self.death_effects.max_effects))
         if len(self._death_effects) > max_effects:
-            self._death_effects = self._death_effects[-max_effects:]
+            for effect in self._death_effects[:-max_effects]:
+                self._death_effect_pool.release(effect)
+            del self._death_effects[:-max_effects]
 
     def _update_death_effects(self, snapshot: WorldSnapshot) -> None:
         now = time.time()
@@ -1374,9 +1074,14 @@ class GameApp:
 
     def _prune_death_effects(self, now: float) -> None:
         lifetime = max(float(self.death_effects.corpse_seconds), float(self.death_effects.blood_seconds))
-        self._death_effects = [
-            effect for effect in self._death_effects if now - float(effect.get("started", now)) <= lifetime + 0.08
-        ]
+        write_index = 0
+        for effect in self._death_effects:
+            if now - float(effect.get("started", now)) <= lifetime + 0.08:
+                self._death_effects[write_index] = effect
+                write_index += 1
+            else:
+                self._death_effect_pool.release(effect)
+        del self._death_effects[write_index:]
 
     def _has_death_effect(self, entity_type: str, entity_id: str) -> bool:
         key = f"{entity_type}:{entity_id}"
@@ -1407,7 +1112,7 @@ class GameApp:
             self._regen_target_health = None
         self._last_local_health = player.health
 
-    def _build_input(self, player_id: str) -> InputCommand:
+    def _legacy_input_command(self, player_id: str) -> InputCommand:
         keys = pygame.key.get_pressed()
         move_x = float(keys[pygame.K_d] or keys[pygame.K_RIGHT]) - float(keys[pygame.K_a] or keys[pygame.K_LEFT])
         move_y = float(keys[pygame.K_s] or keys[pygame.K_DOWN]) - float(keys[pygame.K_w] or keys[pygame.K_UP])
@@ -1443,8 +1148,8 @@ class GameApp:
             sneak=keys[pygame.K_LCTRL] or keys[pygame.K_RCTRL],
         )
 
-    def _dispatch_pending_commands(self, player_id: str) -> None:
-        commands = self._pending_command_specs()
+    def _dispatch_action_buffer(self, player_id: str) -> None:
+        commands = self._action_command_specs()
         if not commands:
             return
         if self.state == "online_game":
@@ -1465,51 +1170,19 @@ class GameApp:
     def _queue_client_action(self, kind: str, payload: dict[str, object] | None = None) -> None:
         self.actions.push(kind, payload)
 
-    def _pending_command_specs(self) -> list[tuple[str, dict[str, object]]]:
-        commands = self.actions.peek_command_specs()
-        if self.pending_slot:
-            commands.append(("select_slot", {"slot": self.pending_slot}))
-        if self.pending_reload:
-            commands.append(("reload", {}))
-        if self.pending_pickup:
-            commands.append(("pickup", {}))
-        if self.pending_interact:
-            commands.append(("interact", {}))
-        if self.pending_toggle_utility:
-            commands.append(("toggle_utility", {}))
-        if self.pending_respawn:
-            commands.append(("respawn", {}))
-        if self.pending_throw_grenade:
-            commands.append(("throw_grenade", {}))
-        if self.pending_medkit:
-            commands.append(("use_medkit", {}))
-        if self.pending_inventory_action:
-            commands.append(("inventory_action", dict(self.pending_inventory_action)))
-        if self.pending_craft_key:
-            commands.append(("craft", {"key": self.pending_craft_key}))
-        if self.pending_repair_slot:
-            commands.append(("repair", {"slot": self.pending_repair_slot}))
-        if self.pending_equip_armor:
-            commands.append(("equip_armor", {"armor_key": self.pending_equip_armor}))
-        return commands
+    def _action_command_specs(self) -> list[tuple[str, dict[str, object]]]:
+        return self.actions.peek_command_specs()
 
     def _clear_transient_inputs(self) -> None:
-        self.pending_reload = False
-        self.pending_pickup = False
-        self.pending_medkit = False
-        self.pending_interact = False
-        self.pending_respawn = False
-        self.pending_throw_grenade = False
-        self.pending_toggle_utility = False
-        self.pending_inventory_action = None
-        self.pending_craft_key = None
-        self.pending_repair_slot = None
-        self.pending_slot = None
-        self.pending_equip_armor = None
         self.actions.clear()
 
     def _reset_death_effect_tracking(self) -> None:
+        for effect in self._death_effects:
+            self._death_effect_pool.release(effect)
         self._death_effects.clear()
+        for effect in self._explosion_effects:
+            self._explosion_effect_pool.release(effect)
+        self._explosion_effects.clear()
         self._prev_zombie_death_state.clear()
         self._prev_player_death_state.clear()
         self._prev_projectile_audio_state.clear()
@@ -1719,256 +1392,6 @@ class GameApp:
         self.scene_manager.render(self._current_render_context(0.0))
         self._present()
 
-    def _draw_menu(self) -> None:
-        self.screen.fill(BG)
-        self._draw_neon_background()
-        pulse = (math.sin(time.time() * 2.8) + 1.0) * 0.5
-
-        # Create responsive main menu panel
-        panel_width = 420
-        panel_height = 580
-        panel_x = 48
-        panel_y = (SCREEN_H - panel_height) // 2
-        panel = pygame.Rect(panel_x, panel_y, panel_width, panel_height)
-
-        pygame.draw.rect(self.screen, (10, 15, 25), panel, border_radius=12)
-        pygame.draw.rect(self.screen, CYAN, panel, 2, border_radius=12)
-        glow = pygame.Surface(panel.inflate(26, 26).size, pygame.SRCALPHA)
-        pygame.draw.rect(glow, (76, 225, 255, int(22 + pulse * 34)), glow.get_rect(), 2, border_radius=16)
-        self.screen.blit(glow, panel.inflate(26, 26))
-
-        # Improved text positioning
-        self._draw_text_fit(self.tr("app.title"), pygame.Rect(panel.x + 28, panel.y + 32, panel.w - 56, 64), TEXT, self.big, center=True)
-        self._draw_text_fit(self.tr("menu.subtitle"), pygame.Rect(panel.x + 30, panel.y + 110, panel.w - 60, 24), CYAN, self.font, center=True)
-        self._draw_text_fit(self.tr("menu.caption"), pygame.Rect(panel.x + 30, panel.y + 140, panel.w - 60, 20), MUTED, self.small, center=True)
-
-        for button in self._menu_buttons:
-            self._draw_button(button.rect, self.tr(button.label), button.hovered(self._mouse_pos()))
-        self._draw_menu_showcase()
-
-    def _draw_menu_showcase(self) -> None:
-        pulse = (math.sin(time.time() * 3.3) + 1.0) * 0.5
-        showcase = pygame.Rect(492, 96, 662, 548)
-        pygame.draw.rect(self.screen, (12, 18, 28), showcase, border_radius=10)
-        pygame.draw.rect(self.screen, (58, 78, 108), showcase, 2, border_radius=10)
-        pulse_outline = pygame.Surface((676, 562), pygame.SRCALPHA)
-        pygame.draw.rect(pulse_outline, (104, 198, 255, int(16 + pulse * 48)), pulse_outline.get_rect(), 1, border_radius=12)
-        self.screen.blit(pulse_outline, (485, 89))
-        for i in range(7):
-            pygame.draw.line(self.screen, (25, 38, 58), (530 + i * 88, 128), (460 + i * 118, 562), 2)
-        self._draw_text(self.tr("menu.systems"), 536, 132, TEXT, self.big)
-        cards = [
-            (self.tr("menu.card.stealth.title"), self.tr("menu.card.stealth.body"), CYAN, "silence"),
-            (self.tr("menu.card.ai.title"), self.tr("menu.card.ai.body"), YELLOW, "ai"),
-            (self.tr("menu.card.craft.title"), self.tr("menu.card.craft.body"), GREEN, "loot"),
-            (self.tr("menu.card.online.title"), self.tr("menu.card.online.body"), PURPLE, "online"),
-        ]
-        for index, (title, body, color, image_key) in enumerate(cards):
-            rect = pygame.Rect(530, 226 + index * 92, 556, 74)
-            hover_pulse = 0.5 + 0.5 * math.sin(time.time() * 4.8 + index)
-            pygame.draw.rect(self.screen, PANEL, rect, border_radius=8)
-            pygame.draw.rect(self.screen, (54, 74, 104), rect, 1, border_radius=8)
-            glow = pygame.Surface(rect.inflate(10, 10).size, pygame.SRCALPHA)
-            pygame.draw.rect(glow, (*color, int(18 + hover_pulse * 38)), glow.get_rect(), 1, border_radius=10)
-            self.screen.blit(glow, rect.inflate(10, 10))
-            image_rect = pygame.Rect(rect.x + 14, rect.y + 11, 52, 52)
-            pygame.draw.rect(self.screen, (10, 16, 28), image_rect, border_radius=9)
-            pygame.draw.rect(self.screen, color, image_rect, 2, border_radius=9)
-            if not self._draw_item_icon(image_key, image_rect.inflate(-8, -8), aura=False, shadow=False):
-                pygame.draw.circle(self.screen, color, image_rect.center, 12)
-            self._draw_text(title, rect.x + 80, rect.y + 10, TEXT, self.mid)
-            self._draw_text(body, rect.x + 82, rect.y + 44, MUTED, self.small)
-
-    def _draw_options_menu(self) -> None:
-        self.screen.fill(BG)
-        self._draw_neon_background()
-        self._draw_settings_hub()
-
-    def _draw_single_setup(self) -> None:
-        self.screen.fill(BG)
-        self._draw_neon_background()
-        panel = pygame.Rect((SCREEN_W - 660) // 2, 120, 660, 500)
-        pygame.draw.rect(self.screen, PANEL, panel, border_radius=12)
-        pygame.draw.rect(self.screen, CYAN, panel, 2, border_radius=12)
-        self._draw_text_fit(self.tr("single.setup.title"), pygame.Rect(panel.x + 24, panel.y + 28, panel.w - 48, 42), TEXT, self.big, center=True)
-        self._draw_text_fit(self.tr("single.setup.caption"), pygame.Rect(panel.x + 28, panel.y + 76, panel.w - 56, 24), MUTED, self.small, center=True)
-        mouse = self._mouse_pos()
-        rows = [
-            (
-                self.tr("single.setup.map"),
-                self.single_map_titles.get(self.single_map_key, self.single_map_key.replace("_", " ").title()),
-            ),
-            (self.tr("single.setup.difficulty"), self.tr(f"difficulty.{self.difficulty_key}")),
-            (self.tr("single.setup.bots"), self.tr("state.on") if self.single_bots_enabled else self.tr("state.off")),
-            (self.tr("single.setup.bot_density"), self.tr(f"density.{self.bot_density}")),
-        ]
-        for index, (left, right) in enumerate(rows):
-            rect = pygame.Rect(panel.x + 56, panel.y + 130 + index * 70, panel.w - 112, 50)
-            hovered = rect.collidepoint(mouse)
-            locked = index in {1, 3} and not self.single_bots_enabled
-            pulse = (math.sin(time.time() * 6.0 + index) + 1.0) * 0.5
-            bg_color = (24, 30, 46) if locked else PANEL_2 if hovered else PANEL
-            border_color = (92, 124, 172) if not locked else (82, 86, 102)
-            pygame.draw.rect(self.screen, bg_color, rect, border_radius=10)
-            pygame.draw.rect(self.screen, border_color, rect, 2, border_radius=10)
-            if hovered and not locked:
-                glow = pygame.Surface(rect.inflate(12, 12).size, pygame.SRCALPHA)
-                pygame.draw.rect(glow, (96, 206, 255, int(20 + pulse * 52)), glow.get_rect(), 1, border_radius=12)
-                self.screen.blit(glow, rect.inflate(12, 12))
-            self._draw_text_fit(left, pygame.Rect(rect.x + 16, rect.y + 14, rect.w - 180, 22), TEXT, self.font)
-            value_color = CYAN
-            if index == 1:
-                value_color = GREEN if self.difficulty_key == "easy" else YELLOW if self.difficulty_key == "medium" else RED if self.difficulty_key == "hard" else PURPLE
-            elif index == 3:
-                value_color = GREEN if self.bot_density == "low" else YELLOW if self.bot_density == "normal" else RED
-            if locked:
-                value_color = MUTED
-            self._draw_text_fit(right, pygame.Rect(rect.right - 170, rect.y + 14, 154, 22), value_color, self.hud_title_font, center=True)
-            if index == 0:
-                caret = "v" if self.single_map_dropdown_open else ">"
-                self._draw_text_fit(caret, pygame.Rect(rect.right - 32, rect.y + 16, 16, 18), CYAN, self.font, center=True)
-        self._draw_single_map_dropdown(panel)
-        back_rect = pygame.Rect(panel.x + 56, panel.bottom - 72, 230, 46)
-        start_rect = pygame.Rect(panel.right - 286, panel.bottom - 72, 230, 46)
-        self._draw_button(back_rect, self.tr("settings.back"), back_rect.collidepoint(mouse))
-        self._draw_button(start_rect, self.tr("single.setup.start"), start_rect.collidepoint(mouse))
-
-    def _draw_single_map_dropdown(self, panel: pygame.Rect) -> None:
-        if self.single_map_dropdown_alpha <= 0.01:
-            return
-        row = pygame.Rect(panel.x + 56, panel.y + 130, panel.w - 112, 50)
-        options = list(self.single_map_options)
-        popup = pygame.Rect(row.x, row.bottom + 6, row.w, max(58, 20 + len(options) * 36))
-        surface = pygame.Surface(popup.size, pygame.SRCALPHA)
-        alpha = int(220 * self.single_map_dropdown_alpha)
-        pygame.draw.rect(surface, (14, 20, 32, alpha), surface.get_rect(), border_radius=10)
-        pygame.draw.rect(surface, (98, 176, 255, int(180 * self.single_map_dropdown_alpha)), surface.get_rect(), 2, border_radius=10)
-        self.screen.blit(surface, popup)
-        for index, option in enumerate(options):
-            item = pygame.Rect(popup.x + 10, popup.y + 10 + index * 36, popup.w - 30, 30)
-            hovered = item.collidepoint(self._mouse_pos())
-            pygame.draw.rect(self.screen, PANEL_2 if hovered else BG, item, border_radius=7)
-            pygame.draw.rect(self.screen, CYAN if option == self.single_map_key else (64, 84, 116), item, 1, border_radius=7)
-            title = self.single_map_titles.get(option, option.replace("_", " ").title())
-            self._draw_text_fit(title.upper(), item.inflate(-10, -6), CYAN if option == self.single_map_key else TEXT, self.font)
-        track = pygame.Rect(popup.right - 14, popup.y + 10, 6, popup.h - 20)
-        pygame.draw.rect(self.screen, (18, 25, 40), track, border_radius=4)
-        pygame.draw.rect(self.screen, (88, 160, 224), track, 1, border_radius=4)
-        knob = pygame.Rect(track.x + 1, track.y + 1, track.w - 2, max(18, track.h - 2))
-        pygame.draw.rect(self.screen, CYAN, knob, border_radius=4)
-
-    def _draw_loading_screen(self) -> None:
-        self.screen.fill(BG)
-        self._draw_loading_poster()
-
-        snapshot = self.loading_state.snapshot() if self.loading_state else None
-        elapsed = max(0.0, time.time() - self._loading_started_at)
-        base_progress = snapshot.progress if snapshot else 0.0
-        progress = max(base_progress, min(0.94, 0.08 + elapsed * 0.18))
-        if snapshot and snapshot.stage == LoadingStage.READY:
-            progress = 1.0
-
-        overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
-        overlay.fill((4, 8, 18, 118))
-        self.screen.blit(overlay, (0, 0))
-
-        pulse = (math.sin(time.time() * 3.2) + 1.0) * 0.5
-        panel = pygame.Rect((SCREEN_W - 660) // 2, SCREEN_H - 245, 660, 150)
-        glass = pygame.Surface(panel.size, pygame.SRCALPHA)
-        pygame.draw.rect(glass, (10, 16, 30, 202), glass.get_rect(), border_radius=12)
-        pygame.draw.rect(glass, (96, 206, 255, int(120 + pulse * 70)), glass.get_rect(), 2, border_radius=12)
-        self.screen.blit(glass, panel)
-
-        title = self.single_map_titles.get(self.single_map_key, self.single_map_key.replace("_", " ").title())
-        label = snapshot.label if snapshot else self.tr("loading.init")
-        if self.loading_error:
-            label = self.loading_error
-
-        self._draw_text_fit(title, pygame.Rect(panel.x + 112, panel.y + 24, panel.w - 164, 34), TEXT, self.mid)
-        self._draw_text_fit(
-            label,
-            pygame.Rect(panel.x + 112, panel.y + 62, panel.w - 164, 24),
-            RED if self.loading_error else MUTED,
-            self.font,
-        )
-
-        spinner_rect = pygame.Rect(panel.x + 36, panel.y + 34, 54, 54)
-        self._draw_loading_spinner(spinner_rect)
-
-        bar = pygame.Rect(panel.x + 36, panel.bottom - 42, panel.w - 72, 16)
-        pygame.draw.rect(self.screen, (8, 13, 24), bar, border_radius=8)
-        fill = pygame.Rect(bar.x, bar.y, int(bar.w * max(0.0, min(1.0, progress))), bar.h)
-        pygame.draw.rect(self.screen, CYAN if not self.loading_error else RED, fill, border_radius=8)
-        pygame.draw.rect(self.screen, (144, 228, 255), bar, 1, border_radius=8)
-        percent = f"{int(max(0.0, min(1.0, progress)) * 100):d}%"
-        self._draw_text_fit(percent, pygame.Rect(bar.right - 70, bar.y - 32, 70, 22), TEXT, self.hud_title_font, center=True)
-
-    def _draw_loading_poster(self) -> None:
-        if not self.loading_poster:
-            self._draw_neon_background()
-            return
-
-        source = self.loading_poster
-        scale = max(SCREEN_W / source.get_width(), SCREEN_H / source.get_height())
-        size = (max(1, int(source.get_width() * scale)), max(1, int(source.get_height() * scale)))
-        poster = pygame.transform.smoothscale(source, size)
-        self.screen.blit(poster, ((SCREEN_W - size[0]) // 2, (SCREEN_H - size[1]) // 2))
-
-    def _draw_loading_spinner(self, rect: pygame.Rect) -> None:
-        if self.loading_spinner:
-            angle = -(time.time() * 180.0) % 360.0
-            source = pygame.transform.smoothscale(self.loading_spinner, rect.size)
-            rotated = pygame.transform.rotozoom(source, angle, 1.0)
-            self.screen.blit(rotated, rotated.get_rect(center=rect.center))
-            return
-
-        angle = time.time() * math.tau
-        pygame.draw.circle(self.screen, (22, 32, 52), rect.center, rect.w // 2, 4)
-        for index in range(8):
-            a = angle + index * math.tau / 8.0
-            dot = pygame.Surface((8, 8), pygame.SRCALPHA)
-            pygame.draw.circle(dot, (76, 225, 255, min(255, 80 + index * 18)), (4, 4), 4)
-            self.screen.blit(
-                dot,
-                (
-                    rect.centerx + math.cos(a) * 22 - 4,
-                    rect.centery + math.sin(a) * 22 - 4,
-                ),
-            )
-
-    def _draw_servers(self) -> None:
-        self.screen.fill(BG)
-        self._draw_neon_background()
-        self._draw_text(self.tr("servers.title"), 72, 90, TEXT, self.big)
-        self._draw_text(self.tr("servers.caption"), 76, 150, MUTED)
-        for index, entry in enumerate(self.server_entries):
-            rect = pygame.Rect(72, 190 + index * 72, 720, 56)
-            selected = index == self.selected_server
-            pygame.draw.rect(self.screen, PANEL_2 if selected else PANEL, rect, border_radius=8)
-            pygame.draw.rect(self.screen, CYAN if selected else (45, 59, 91), rect, 2, border_radius=8)
-            self._draw_text_fit(entry.name, pygame.Rect(rect.x + 18, rect.y + 8, 160, 26), TEXT, self.mid)
-            mode_label = self.tr("servers.mode.pvp") if entry.pvp else self.tr("servers.mode.survival")
-            mode_color = RED if entry.pvp else GREEN
-            mode_rect = pygame.Rect(rect.x + 186, rect.y + 16, 62, 24)
-            pygame.draw.rect(self.screen, (12, 18, 30), mode_rect, border_radius=7)
-            pygame.draw.rect(self.screen, mode_color, mode_rect, 1, border_radius=7)
-            self._draw_text_fit(mode_label, mode_rect.inflate(-8, -4), mode_color, self.small, center=True)
-            endpoint = f"{entry.host}:{entry.port}"
-            ping = "offline" if entry.ping_ms is None else f"{entry.ping_ms:.0f} ms"
-            difficulty = self.tr(f"difficulty.{entry.difficulty}") if entry.difficulty in self.difficulty_options else entry.difficulty
-            self._draw_text(endpoint, rect.x + 260, rect.y + 18, MUTED)
-            players = f"{entry.players}/{entry.max_players}" if entry.max_players else str(entry.players)
-            readiness = self.tr("servers.ready") if entry.ready else self.tr("servers.not_ready") if entry.ping_ms is not None else self.tr("servers.offline")
-            status = f"{ping}  {players}  {readiness}" if entry.pvp else f"{ping}  {players}  {readiness}  {difficulty}"
-            self._draw_text_fit(status, pygame.Rect(rect.x + 485, rect.y + 18, 210, 22), GREEN if entry.ready else YELLOW if entry.ping_ms else RED, self.small)
-        back_rect = pygame.Rect(72, 632, 180, 46)
-        refresh_rect = pygame.Rect(270, 632, 180, 46)
-        connect_rect = pygame.Rect(470, 632, 180, 46)
-        mouse = self._mouse_pos()
-        self._draw_button(back_rect, self.tr("servers.back"), back_rect.collidepoint(mouse))
-        self._draw_button(refresh_rect, self.tr("servers.refresh"), refresh_rect.collidepoint(mouse))
-        self._draw_button(connect_rect, self.tr("servers.connect"), connect_rect.collidepoint(mouse))
-
     def _draw_game(self) -> None:
         self.scene_manager.render(self._current_render_context(0.0))
 
@@ -1979,6 +1402,7 @@ class GameApp:
         camera: Vec2,
         dt: float,
         render_frame: RenderFrame | None = None,
+        render_view=None,
     ) -> RenderContext:
         return RenderContext(
             screen=self.screen,
@@ -2013,6 +1437,7 @@ class GameApp:
             online_player_id=self.online.player_id,
             now=time.time(),
             render_frame=render_frame,
+            render_snapshot_view=render_view,
             perf=self.perf_stats,
             effects=self._sync_visual_effect_state(),
             death_tuning=self.death_effects,
@@ -2027,25 +1452,50 @@ class GameApp:
 
     def _draw_perf_overlay(self) -> None:
         stats = self.perf_stats
-        lines = [
+        compact = [
             f"FPS {self.clock.get_fps():5.1f}  Frame {stats.frame_ms:5.1f} ms",
             f"Update {stats.update_ms:5.1f}  Prepare {stats.render_prepare_ms:5.1f}",
             f"World {stats.draw_world_ms:5.1f}  UI {stats.draw_ui_ms:5.1f}",
             f"HUD {stats.hud_ms:5.1f}  Minimap {stats.minimap_ms:5.1f}  Overlay {stats.overlay_ms:5.1f}",
-            (
-                f"Visible P:{stats.visible_players} "
-                f"Z:{stats.visible_zombies} S:{stats.visible_soldiers} L:{stats.visible_loot}"
-            ),
-            f"Text cache hits {stats.text_cache_hits}",
+            f"Visible P:{stats.visible_players} Z:{stats.visible_zombies} S:{stats.visible_soldiers} L:{stats.visible_loot}",
         ]
-        width = 360
+        detailed = [
+            f"Scene update/render {stats.scene_update_ms:5.1f}/{stats.scene_render_ms:5.1f}  Controller {stats.controller_ms:5.1f}",
+            f"Frame build {stats.render_frame_build_ms:5.2f}  Cull {stats.culling_ms:5.2f}  Spatial {stats.spatial_query_ms:5.2f}",
+            f"Map {stats.map_ms:5.2f}  Static {stats.world_static_ms:5.2f}  Dynamic {stats.world_dynamic_ms:5.2f}",
+            f"Actors {stats.actors_ms:5.2f}  Projectiles {stats.projectiles_ms:5.2f}  Effects {stats.effects_ms:5.2f}",
+            f"Snapshot P:{stats.snapshot_total_players} Z:{stats.snapshot_total_zombies} S:{stats.snapshot_total_soldiers} L:{stats.snapshot_total_loot}",
+            f"Chunks visible:{stats.visible_chunks} hit/miss:{stats.static_chunk_hits}/{stats.static_chunk_misses}",
+            f"Text hit/miss:{stats.text_cache_hits}/{stats.text_cache_misses}  Icon hit/miss:{stats.icon_cache_hits}/{stats.icon_cache_misses}",
+            f"Minimap cache hit/miss:{stats.minimap_cache_hits}/{stats.minimap_cache_misses}",
+            f"GC counts:{stats.gc_count_0}/{stats.gc_count_1}/{stats.gc_count_2} gc:{stats.gc_time_ms:5.2f}ms pacing:{'on' if self.gc_pacing_enabled else 'off'}",
+            f"Alloc-est:{stats.frame_alloc_estimate}",
+            f"Pools active/free:{stats.effect_pool_active}/{stats.effect_pool_free}",
+            f"Frame p95/p99:{stats.frame_p95_ms:5.1f}/{stats.frame_p99_ms:5.1f} over:{stats.over_budget_frames}",
+            f"Budget observe LOD:{stats.suggested_lod_bias:.2f} radius:{stats.suggested_render_radius_scale:.2f}",
+        ]
+        if self.detailed_perf_overlay and self.state == "online_game":
+            online = self.online.online_perf()
+            detailed.extend(
+                [
+                    f"Online {online.network_state} tick:{online.snapshot_tick} age:{online.snapshot_age_ms:5.1f}ms buf:{online.snapshot_buffer_size}",
+                    f"Net interval:{online.snapshot_interval_ms:5.1f}ms ping:{online.ping_ms:5.1f}ms ack:{online.ack_input_seq}",
+                    f"Pending inputs:{online.pending_inputs} commands:{online.pending_commands}",
+                    f"Decode:{online.decode_ms:5.2f} Interp:{online.interpolation_ms:5.2f} Predict:{online.prediction_ms:5.2f}",
+                    f"Prediction error:{online.prediction_error_px:5.1f}px correction:{online.correction_px:5.1f}px",
+                    f"Radius server:{online.server_interest_radius:5.0f} render:{online.render_radius:5.0f} minimap:{online.minimap_radius:5.0f} audio:{online.audio_radius:5.0f}",
+                ]
+            )
+        lines = compact + (detailed if self.detailed_perf_overlay else [])
+        width = 520 if self.detailed_perf_overlay else 360
         height = 24 + len(lines) * 19
         panel = pygame.Rect(14, 14, width, height)
         surface = pygame.Surface(panel.size, pygame.SRCALPHA)
         pygame.draw.rect(surface, (5, 9, 18, 220), surface.get_rect(), border_radius=8)
         pygame.draw.rect(surface, (76, 225, 255, 150), surface.get_rect(), 1, border_radius=8)
         self.screen.blit(surface, panel)
-        self._draw_text("F3 performance", panel.x + 12, panel.y + 8, CYAN, self.small)
+        title = "F4 detailed performance" if self.detailed_perf_overlay else "F3 performance"
+        self._draw_text(title, panel.x + 12, panel.y + 8, CYAN, self.small)
         for index, line in enumerate(lines):
             self._draw_text(line, panel.x + 12, panel.y + 30 + index * 19, TEXT, self.small)
 
@@ -3028,7 +2478,7 @@ class GameApp:
                 continue
             spec = GRENADE_SPECS.get(kind, DEFAULT_GRENADE)
             self._explosion_effects.append(
-                {"pos": pos, "floor": floor, "radius": spec.blast_radius, "color": (255, 168, 118), "start": now, "duration": 0.34},
+                self._explosion_effect_pool.acquire(pos=pos, floor=floor, radius=spec.blast_radius, color=(255, 168, 118), start=now, duration=0.34),
             )
             self._play_explosion_sound_once(grenade_id, "grenade_explosion", pos, floor)
         for mine_id, (pos, floor, kind) in self._prev_mine_state.items():
@@ -3036,14 +2486,19 @@ class GameApp:
                 continue
             spec = MINE_SPECS.get(kind, DEFAULT_MINE)
             self._explosion_effects.append(
-                {"pos": pos, "floor": floor, "radius": spec.blast_radius, "color": (212, 140, 255), "start": now, "duration": 0.36},
+                self._explosion_effect_pool.acquire(pos=pos, floor=floor, radius=spec.blast_radius, color=(212, 140, 255), start=now, duration=0.36),
             )
             self._play_explosion_sound_once(mine_id, "mine_explosion", pos, floor)
         self._prev_grenade_state = current_grenades
         self._prev_mine_state = current_mines
-        self._explosion_effects = [
-            fx for fx in self._explosion_effects if now - float(fx["start"]) <= float(fx["duration"]) + 0.04
-        ]
+        write_index = 0
+        for fx in self._explosion_effects:
+            if now - float(fx["start"]) <= float(fx["duration"]) + 0.04:
+                self._explosion_effects[write_index] = fx
+                write_index += 1
+            else:
+                self._explosion_effect_pool.release(fx)
+        del self._explosion_effects[write_index:]
 
     def _draw_explosion_effects(self, camera: Vec2, player: PlayerState | None) -> None:
         now = time.time()
@@ -4044,7 +3499,7 @@ class GameApp:
         pygame.draw.rect(self.screen, (56, 74, 108), viewport.inflate(8, 8), 1, border_radius=10)
         if tab_has_audio_sliders(self.settings_tab):
             self._draw_audio_settings(viewport)
-            self._draw_options_scrollbar(viewport, 3, 122)
+            self._settings_options_scrollbar(viewport, 3, 122)
             self._settings_footer_buttons(in_game)
             return
         options = tab_toggle_keys(self.settings_tab)
@@ -4093,10 +3548,10 @@ class GameApp:
             self._draw_text_fit(self.tr("settings.language"), pygame.Rect(language_rect.x + 14, language_rect.y + 12, language_rect.w - 180, 20), TEXT, self.font)
             self._draw_text_fit(self.language.upper(), pygame.Rect(language_rect.right - 154, language_rect.y + 12, 140, 20), PURPLE, self.hud_title_font, center=True)
         self.screen.set_clip(previous_clip)
-        self._draw_options_scrollbar(viewport, row_index + (1 if tab_has_language(self.settings_tab) else 0), step_y)
+        self._settings_options_scrollbar(viewport, row_index + (1 if tab_has_language(self.settings_tab) else 0), step_y)
         self._settings_footer_buttons(in_game)
 
-    def _draw_options_scrollbar(self, viewport: pygame.Rect, rows: int, step_y: int) -> None:
+    def _settings_options_scrollbar(self, viewport: pygame.Rect, rows: int, step_y: int) -> None:
         content_h = rows * step_y
         max_scroll = max(0, content_h - viewport.h)
         if max_scroll <= 0:
@@ -4145,54 +3600,6 @@ class GameApp:
         knob = pygame.Rect(track.x + 2, knob_y, track.w - 4, knob_h)
         pygame.draw.rect(self.screen, CYAN, knob, border_radius=4)
         pygame.draw.rect(self.screen, (214, 246, 255), knob, 1, border_radius=4)
-
-    def _handle_single_setup_click(self, pos: tuple[int, int]) -> None:
-        panel = pygame.Rect((SCREEN_W - 660) // 2, 120, 660, 500)
-        back_rect = pygame.Rect(panel.x + 56, panel.bottom - 72, 230, 46)
-        start_rect = pygame.Rect(panel.right - 286, panel.bottom - 72, 230, 46)
-        if back_rect.collidepoint(pos):
-            self.single_map_dropdown_open = False
-            self._set_state(AppState.MENU)
-            return
-        if start_rect.collidepoint(pos):
-            self.single_map_dropdown_open = False
-            self._start_single_player()
-            return
-        rows = [
-            pygame.Rect(panel.x + 56, panel.y + 130, panel.w - 112, 50),
-            pygame.Rect(panel.x + 56, panel.y + 200, panel.w - 112, 50),
-            pygame.Rect(panel.x + 56, panel.y + 270, panel.w - 112, 50),
-            pygame.Rect(panel.x + 56, panel.y + 340, panel.w - 112, 50),
-        ]
-        if rows[0].collidepoint(pos):
-            self.single_map_dropdown_open = not self.single_map_dropdown_open
-            return
-        if self.single_map_dropdown_open:
-            options = list(self.single_map_options)
-            popup = pygame.Rect(rows[0].x, rows[0].bottom + 6, rows[0].w, max(58, 20 + len(options) * 36))
-            for index, option in enumerate(options):
-                item = pygame.Rect(popup.x + 10, popup.y + 10 + index * 36, popup.w - 30, 30)
-                if item.collidepoint(pos):
-                    self.single_map_key = option
-                    self._save_client_settings()
-                    break
-            self.single_map_dropdown_open = False
-            if popup.collidepoint(pos):
-                return
-        else:
-            self.single_map_dropdown_open = False
-        if rows[1].collidepoint(pos):
-            if not self.single_bots_enabled:
-                return
-            idx = self.difficulty_options.index(self.difficulty_key)
-            self.difficulty_key = self.difficulty_options[(idx + 1) % len(self.difficulty_options)]
-        elif rows[2].collidepoint(pos):
-            self.single_bots_enabled = not self.single_bots_enabled
-        elif rows[3].collidepoint(pos):
-            if not self.single_bots_enabled:
-                return
-            self.bot_density = DENSITY_ORDER[(DENSITY_ORDER.index(self.bot_density) + 1) % len(DENSITY_ORDER)]
-        self._save_client_settings()
 
     def _backpack_rect(self, index: int) -> pygame.Rect:
         col = index % 6

@@ -32,6 +32,11 @@ class RenderSpatialIndex:
 
     def query(self, rect: pygame.Rect, floor: int | None = None) -> list[RenderSpatialItem]:
         result: list[RenderSpatialItem] = []
+        self.query_into(rect, result, floor)
+        return result
+
+    def query_into(self, rect: pygame.Rect, out: list[RenderSpatialItem], floor: int | None = None) -> None:
+        out.clear()
         seen: set[str] = set()
         floors = [floor] if floor is not None else self._floors_for_rect(rect)
         for target_floor in floors:
@@ -40,8 +45,7 @@ class RenderSpatialIndex:
                     if item.id in seen or not item.rect.colliderect(rect):
                         continue
                     seen.add(item.id)
-                    result.append(item)
-        return result
+                    out.append(item)
 
     def _keys_for_rect(self, rect: pygame.Rect, floor: int) -> Iterable[tuple[int, int, int]]:
         left = rect.left // self.cell_size
@@ -55,4 +59,3 @@ class RenderSpatialIndex:
     def _floors_for_rect(self, rect: pygame.Rect) -> list[int]:
         floors = {key[0] for key in self._cells}
         return list(floors) or [0]
-

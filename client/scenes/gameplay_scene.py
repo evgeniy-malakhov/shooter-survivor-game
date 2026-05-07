@@ -5,7 +5,12 @@ from typing import Any
 
 import pygame
 
+from client.controllers.crafting_controller import CraftingController
+from client.controllers.gameplay_input_controller import GameplayInputController
+from client.controllers.inventory_controller import InventoryController
+from client.controllers.pause_settings_controller import PauseSettingsController
 from client.controllers.scoreboard_controller import ScoreboardController
+from client.controllers.weapon_custom_controller import WeaponCustomController
 from client.render.ui.context_prompt_renderer import ContextPromptRenderer
 from client.render.render_context import RenderContext
 from client.render.ui.crafting_renderer import CraftingRenderer
@@ -24,9 +29,9 @@ from client.render.world.world_renderer import WorldRenderer
 class GameplayScene:
     def __init__(self, app: Any) -> None:
         self.app = app
-        self.world_renderer = WorldRenderer()
+        self.world_renderer = WorldRenderer(app.static_world_cache)
         self.hud_renderer = HudRenderer()
-        self.minimap_renderer = MinimapRenderer()
+        self.minimap_renderer = MinimapRenderer(app.minimap_static_cache)
         self.status_renderer = StatusRenderer(self.minimap_renderer)
         self.context_prompt_renderer = ContextPromptRenderer()
         self.death_overlay_renderer = DeathOverlayRenderer()
@@ -42,24 +47,45 @@ class GameplayScene:
             self.weapon_custom_renderer,
         )
         self.scoreboard_controller = ScoreboardController(app)
+        self.pause_settings_controller = PauseSettingsController(app)
+        self.weapon_custom_controller = WeaponCustomController(app)
+        self.inventory_controller = InventoryController(app)
+        self.crafting_controller = CraftingController(app)
+        self.input_controller = GameplayInputController(app)
 
     def handle_events(self, events: list[pygame.event.Event]) -> None:
+        started = time.perf_counter()
         for event in events:
             if self.scoreboard_controller.handle_event(event):
                 continue
-            if event.type == pygame.KEYDOWN:
-                self.app._handle_keydown(event)
-            elif event.type == pygame.MOUSEBUTTONDOWN:
-                self.app._handle_mouse_down(event)
-            elif event.type == pygame.MOUSEBUTTONUP:
-                self.app._handle_mouse_up(event)
-            elif event.type == pygame.MOUSEMOTION:
-                self.app._handle_mouse_motion(event)
-            elif event.type == pygame.MOUSEWHEEL:
-                self.app._handle_mouse_wheel(event)
+            if self.pause_settings_controller.handle_event(event):
+                continue
+            if self.weapon_custom_controller.handle_event(event):
+                continue
+            if self.inventory_controller.handle_event(event):
+                continue
+            if self.crafting_controller.handle_event(event):
+                continue
+            self.input_controller.handle_event(event)
+        if hasattr(self.app, "perf_stats"):
+            self.app.perf_stats.controller_ms = (time.perf_counter() - started) * 1000.0
 
     def update(self, dt: float) -> None:
-        self.app._update(dt)
+        app = self.app
+        app._sync_menu_music()
+        if app.state == "single" and app.world and app.local_player_id:
+            app._dispatch_action_buffer(app.local_player_id)
+            command = self.input_controller.build_input_command(app.local_player_id)
+            app.world.set_input(command)
+            blocked = app.settings_open or app.backpack_open or app.craft_open or app.weapon_custom_open
+            app.world.update(0.0 if blocked else dt)
+        elif app.state == "online_game" and app.online.player_id:
+            app._dispatch_action_buffer(app.online.player_id)
+            command = self.input_controller.build_input_command(app.online.player_id)
+            app.online.send_input(command)
+            app._process_online_events()
+        app._update_camera_zoom(dt)
+        app._update_damage_feedback(dt)
 
     def render(self, ctx: RenderContext) -> None:
         if ctx.snapshot:
@@ -85,4 +111,9 @@ class GameplayScene:
         if ctx.perf:
             if ctx.text_cache:
                 ctx.perf.text_cache_hits = ctx.text_cache.hits
+                ctx.perf.text_cache_misses = ctx.text_cache.misses
+            if ctx.assets:
+                ctx.perf.icon_cache_hits = ctx.assets.scale_cache.hits
+                ctx.perf.icon_cache_misses = ctx.assets.scale_cache.misses
             ctx.perf.draw_ui_ms = (time.perf_counter() - started) * 1000.0
+            ctx.perf.ui_render_ms = ctx.perf.draw_ui_ms

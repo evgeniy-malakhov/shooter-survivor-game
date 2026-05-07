@@ -26,8 +26,8 @@ class MapLoadingPipeline:
 
         self._mark(state, LoadingStage.BUILD_COLLISIONS, "Baking collision data", 0.58)
         self._mark(state, LoadingStage.BUILD_NAVIGATION, "Preparing navigation data", 0.72)
-        self._mark(state, LoadingStage.SPAWN_ENTITIES, "Placing spawn zones", 0.84)
-        self._mark(state, LoadingStage.COMPOSE_WORLD, "Composing world runtime", 0.94)
+        self._mark(state, LoadingStage.SPAWN_ENTITIES, "Placing spawn zones", 0.82)
+        self._mark(state, LoadingStage.COMPOSE_WORLD, "Composing world runtime", 0.92)
         return result
 
     def mark_ready(self, state: LoadingScreenState | None) -> None:

@@ -45,6 +45,10 @@ class CameraController:
         zoom = max(0.1, self.zoom)
         return int((pos.x - camera.x) * zoom), int((pos.y - camera.y) * zoom)
 
+    def world_to_screen_xy(self, x: float, y: float, camera: Vec2) -> tuple[int, int]:
+        zoom = max(0.1, self.zoom)
+        return int((x - camera.x) * zoom), int((y - camera.y) * zoom)
+
     def world_rect_to_screen(self, rect: RectState, camera: Vec2) -> pygame.Rect:
         zoom = max(0.1, self.zoom)
         return pygame.Rect(
@@ -52,6 +56,22 @@ class CameraController:
             int((rect.y - camera.y) * zoom),
             max(1, int(rect.w * zoom)),
             max(1, int(rect.h * zoom)),
+        )
+
+    def world_rect_to_screen_tuple(
+        self,
+        x: float,
+        y: float,
+        w: float,
+        h: float,
+        camera: Vec2,
+    ) -> tuple[int, int, int, int]:
+        zoom = max(0.1, self.zoom)
+        return (
+            int((x - camera.x) * zoom),
+            int((y - camera.y) * zoom),
+            max(1, int(w * zoom)),
+            max(1, int(h * zoom)),
         )
 
     def world_size_to_screen(self, value: float, minimum: int = 1) -> int:
@@ -64,4 +84,3 @@ class CameraController:
         w = int(self.viewport_size[0] / zoom + margin * 2)
         h = int(self.viewport_size[1] / zoom + margin * 2)
         return pygame.Rect(x, y, max(1, w), max(1, h))
-

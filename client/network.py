@@ -8,9 +8,12 @@ import threading
 import time
 from collections import deque
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
+from client.game.online_perf import OnlinePerfStats
+from client.game.prediction.input_history import PendingInputRecord
+from client.game.snapshot_handoff import SnapshotHandoff, SnapshotPacket
 from shared.collision import move_circle_against_rects
 from shared.constants import MAP_HEIGHT, MAP_WIDTH, PLAYER_RADIUS, SPRINT_MULTIPLIER
 from shared.interpolation import interpolate_snapshot
@@ -46,13 +49,6 @@ class _BufferedSnapshot:
     data: dict[str, Any]
 
 
-@dataclass(slots=True)
-class _PendingInput:
-    seq: int
-    command: dict[str, Any]
-    dt: float
-
-
 def ping_server(host: str, port: int, timeout: float = 0.75) -> tuple[float | None, dict[str, Any] | None]:
     started = time.perf_counter()
     try:
@@ -77,6 +73,8 @@ class OnlineClient:
         self.server_interest_radius: float = 1600.0
         self.server_building_interest_radius: float = 2200.0
         self.latest_snapshot: WorldSnapshot | None = None
+        self.handoff = SnapshotHandoff()
+        self.perf = OnlinePerfStats()
         self._snapshot_data: dict[str, Any] | None = None
         self._socket: socket.socket | None = None
         self._decoder = FrameDecoder()
@@ -114,12 +112,16 @@ class OnlineClient:
         self._collision_cache_key: tuple[int, int, int] | None = None
         self._collision_walls_cache: tuple[RectState, ...] = ()
         self._snapshot_buffer: deque[_BufferedSnapshot] = deque(maxlen=MAX_INTERPOLATION_BUFFER)
-        self._pending_inputs: deque[_PendingInput] = deque(maxlen=MAX_PENDING_INPUTS)
+        self._pending_inputs: deque[PendingInputRecord] = deque(maxlen=MAX_PENDING_INPUTS)
         self._latest_server_time = 0.0
         self._latest_received_at = 0.0
         self._snapshot_interval = 0.05
         self._render_cache_time = 0.0
         self._render_cache_snapshot: WorldSnapshot | None = None
+        self._last_decode_ms = 0.0
+        self._last_interpolation_ms = 0.0
+        self._last_prediction_ms = 0.0
+        self._last_prediction_error_px = 0.0
         self.events: deque[dict[str, Any]] = deque(maxlen=256)
         self._pending_commands: dict[int, dict[str, Any]] = {}
         self._command_results: deque[dict[str, Any]] = deque(maxlen=128)
@@ -182,7 +184,9 @@ class OnlineClient:
         if not isinstance(snapshot_data, dict):
             sock.close()
             raise ConnectionError("server sent invalid world snapshot")
+        decode_started = time.perf_counter()
         snapshot_data = self._decode_snapshot_payload(snapshot_data, message.get("schema"))
+        self._last_decode_ms = (time.perf_counter() - decode_started) * 1000.0
         with self._lock:
             self._connection_epoch += 1
             epoch = self._connection_epoch
@@ -211,7 +215,7 @@ class OnlineClient:
                 self._ping_ms = None
         with self._snapshot_lock:
             self._snapshot_data = snapshot_data
-            self.latest_snapshot = WorldSnapshot.from_dict(snapshot_data)
+            self.latest_snapshot = None
             self._last_snapshot_tick = int(message.get("tick", 0))
             self._last_snapshot_seq = int(message.get("seq", 0))
             self._ack_input_seq = int(message.get("ack_input_seq", 0))
@@ -235,6 +239,18 @@ class OnlineClient:
             self._collision_cache_key = None
             self._collision_walls_cache = ()
             self._render_cache_snapshot = None
+            self.handoff.publish(
+                SnapshotPacket(
+                    tick=self._last_snapshot_tick,
+                    seq=self._last_snapshot_seq,
+                    ack_input_seq=self._ack_input_seq,
+                    server_time=self._latest_server_time,
+                    received_at=self._latest_received_at,
+                    snapshot_data=snapshot_data,
+                    decode_ms=self._last_decode_ms,
+                )
+            )
+            self._update_perf_locked()
         sock.settimeout(None)
         self._writer_thread = threading.Thread(target=self._write_loop, args=(epoch,), name="online-writer", daemon=True)
         self._writer_thread.start()
@@ -260,7 +276,7 @@ class OnlineClient:
                 dt = max(1.0 / 120.0, min(1.0 / 20.0, now - self._last_input_sent_at))
                 self._last_input_sent_at = now
                 self._last_input_payload = command_data
-                self._pending_inputs.append(_PendingInput(self._input_seq, command_data, dt))
+                self._pending_inputs.append(PendingInputRecord(self._input_seq, command_data, dt))
                 self._enqueue(encode_message("input", seq=self._input_seq, command=command_data))
         except (OSError, queue.Full) as exc:
             self.error = str(exc)
@@ -364,6 +380,7 @@ class OnlineClient:
         self._resume_deadline = 0.0
         self.player_id = None
         self.latest_snapshot = None
+        self.handoff.clear()
         self._snapshot_data = None
         self.session_token = None
         self.resume_timeout = 0.0
@@ -392,19 +409,34 @@ class OnlineClient:
             self._collision_cache_key = None
             self._collision_walls_cache = ()
             self._render_cache_snapshot = None
+            self._update_perf_locked()
 
     def snapshot(self) -> WorldSnapshot | None:
         with self._snapshot_lock:
             now = time.perf_counter()
             if self._render_cache_snapshot and now - self._render_cache_time < 1.0 / 120.0:
+                self._update_perf_locked(now)
                 return self._render_cache_snapshot
             data = self._render_snapshot_data(now)
             if data is None:
                 return self.latest_snapshot
+            decode_started = time.perf_counter()
             snapshot = WorldSnapshot.from_dict(data)
+            self._last_decode_ms = (time.perf_counter() - decode_started) * 1000.0
             self._render_cache_snapshot = snapshot
             self._render_cache_time = now
+            self.latest_snapshot = snapshot
+            self._update_perf_locked(now)
             return snapshot
+
+    def snapshot_tick(self) -> int:
+        with self._snapshot_lock:
+            return self._last_snapshot_tick
+
+    def online_perf(self) -> OnlinePerfStats:
+        with self._snapshot_lock:
+            self._update_perf_locked()
+            return replace(self.perf)
 
     def poll_events(self) -> list[dict[str, Any]]:
         with self._snapshot_lock:
@@ -467,7 +499,7 @@ class OnlineClient:
 
     def _send_state_hash(self) -> None:
         with self._snapshot_lock:
-            snapshot_data = deepcopy(self._snapshot_data) if self._snapshot_data else None
+            snapshot_data = self._snapshot_data
             tick = self._last_snapshot_tick
         if not snapshot_data or tick < 0:
             return
@@ -527,7 +559,7 @@ class OnlineClient:
                 if snapshot_data is None:
                     return
                 self._snapshot_data = snapshot_data
-                self.latest_snapshot = WorldSnapshot.from_dict(snapshot_data)
+                self.latest_snapshot = None
                 self._last_snapshot_tick = int(message.get("tick", self._last_snapshot_tick))
                 self._last_snapshot_seq = int(message.get("seq", self._last_snapshot_seq))
                 self._ack_input_seq = max(self._ack_input_seq, int(message.get("ack_input_seq", self._ack_input_seq)))
@@ -547,6 +579,18 @@ class OnlineClient:
                 self._collision_cache_key = None
                 self._collision_walls_cache = ()
                 self._render_cache_snapshot = None
+                self.handoff.publish(
+                    SnapshotPacket(
+                        tick=self._last_snapshot_tick,
+                        seq=self._last_snapshot_seq,
+                        ack_input_seq=self._ack_input_seq,
+                        server_time=self._latest_server_time,
+                        received_at=self._latest_received_at,
+                        snapshot_data=snapshot_data,
+                        decode_ms=self._last_decode_ms,
+                    )
+                )
+                self._update_perf_locked()
         elif message_type == "events":
             with self._snapshot_lock:
                 for event in message.get("events", []):
@@ -564,11 +608,12 @@ class OnlineClient:
                     self._predicted_player_data = None
                     self._last_prediction_at = 0.0
                     self._prediction_correction_x = 0.0
-                    self._prediction_correction_y = 0.0
-                    self._collision_cache_key = None
-                    self._collision_walls_cache = ()
-                    self._render_cache_snapshot = None
-                    self.events.append({"kind": "desync_resync", **dict(message)})
+                self._prediction_correction_y = 0.0
+                self._collision_cache_key = None
+                self._collision_walls_cache = ()
+                self._render_cache_snapshot = None
+                self.handoff.clear()
+                self.events.append({"kind": "desync_resync", **dict(message)})
         elif message_type == "pong":
             sent = message.get("sent")
             with contextlib.suppress(TypeError, ValueError):
@@ -646,15 +691,20 @@ class OnlineClient:
                 return
 
     def _snapshot_from_message(self, message: dict[str, Any]) -> dict[str, Any] | None:
+        started = time.perf_counter()
         if message.get("full", True) or "snapshot" in message:
             snapshot = message.get("snapshot")
-            return self._decode_snapshot_payload(snapshot, message.get("schema")) if isinstance(snapshot, dict) else None
+            result = self._decode_snapshot_payload(snapshot, message.get("schema")) if isinstance(snapshot, dict) else None
+            self._last_decode_ms = (time.perf_counter() - started) * 1000.0
+            return result
         delta = message.get("delta")
         if not isinstance(delta, dict) or self._snapshot_data is None:
             return None
         if message.get("schema") == SNAPSHOT_SCHEMA:
             delta = expand_delta(delta)
-        return apply_snapshot_delta(self._snapshot_data, delta)
+        result = apply_snapshot_delta(self._snapshot_data, delta)
+        self._last_decode_ms = (time.perf_counter() - started) * 1000.0
+        return result
 
     def _decode_snapshot_payload(self, snapshot: dict[str, Any], schema: object) -> dict[str, Any]:
         return expand_snapshot(snapshot) if schema == SNAPSHOT_SCHEMA or snapshot.get("v") == 1 else snapshot
@@ -663,15 +713,45 @@ class OnlineClient:
         while self._pending_inputs and self._pending_inputs[0].seq <= self._ack_input_seq:
             self._pending_inputs.popleft()
 
+    def _update_perf_locked(self, now: float | None = None) -> None:
+        current = now if now is not None else time.perf_counter()
+        self.perf.snapshot_tick = self._last_snapshot_tick
+        self.perf.snapshot_age_ms = max(0.0, (current - self._latest_received_at) * 1000.0) if self._latest_received_at else 0.0
+        self.perf.snapshot_buffer_size = len(self._snapshot_buffer)
+        self.perf.snapshot_interval_ms = max(0.0, self._snapshot_interval * 1000.0)
+        self.perf.ping_ms = 0.0 if self._ping_ms is None else float(self._ping_ms)
+        self.perf.pending_inputs = len(self._pending_inputs)
+        self.perf.ack_input_seq = self._ack_input_seq
+        self.perf.pending_commands = len(self._pending_commands)
+        self.perf.prediction_error_px = self._last_prediction_error_px
+        self.perf.correction_px = math.hypot(self._prediction_correction_x, self._prediction_correction_y)
+        self.perf.network_state = self._connection_state
+        self.perf.decode_ms = self._last_decode_ms
+        self.perf.interpolation_ms = self._last_interpolation_ms
+        self.perf.prediction_ms = self._last_prediction_ms
+        self.perf.server_interest_radius = self.server_interest_radius
+        self.perf.render_radius = min(self.server_interest_radius, self.server_building_interest_radius)
+        self.perf.minimap_radius = max(self.server_interest_radius, 1400.0)
+        self.perf.audio_radius = self.server_interest_radius
+
     def _render_snapshot_data(self, now: float) -> dict[str, Any] | None:
         if not self._snapshot_data:
             return None
         render_time = self._estimated_server_time(now) - INTERPOLATION_DELAY_SECONDS
+        interpolation_started = time.perf_counter()
         source = self._interpolated_data(render_time)
+        self._last_interpolation_ms = (time.perf_counter() - interpolation_started) * 1000.0
         if source is None:
             source = self._snapshot_data
-        data = deepcopy(source)
+        if self.player_id and (self._predicted_player_data is not None or self._pending_inputs):
+            data = dict(source)
+            players = source.get("players", {})
+            data["players"] = dict(players) if isinstance(players, dict) else {}
+        else:
+            data = source
+        prediction_started = time.perf_counter()
         self._apply_local_prediction(data)
+        self._last_prediction_ms = (time.perf_counter() - prediction_started) * 1000.0
         return data
 
     def _estimated_server_time(self, now: float) -> float:
@@ -744,6 +824,7 @@ class OnlineClient:
         error_x = target_x - current_x
         error_y = target_y - current_y
         distance = math.hypot(error_x, error_y)
+        self._last_prediction_error_px = distance
         if critical_changed or distance >= PREDICTION_HARD_SNAP_DISTANCE:
             self._predicted_player_data = target
             self._prediction_correction_x = 0.0
