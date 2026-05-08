@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import time
 from typing import Any
@@ -29,7 +29,7 @@ from client.render.world.world_renderer import WorldRenderer
 class GameplayScene:
     def __init__(self, app: Any) -> None:
         self.app = app
-        self.world_renderer = WorldRenderer(app.static_world_cache)
+        self.world_renderer = WorldRenderer(app.static_world_cache, app.actor_sprite_cache)
         self.hud_renderer = HudRenderer()
         self.minimap_renderer = MinimapRenderer(app.minimap_static_cache)
         self.status_renderer = StatusRenderer(self.minimap_renderer)
@@ -38,8 +38,8 @@ class GameplayScene:
         self.scoreboard_renderer = ScoreboardRenderer()
         self.inventory_renderer = InventoryRenderer()
         self.crafting_renderer = CraftingRenderer()
-        self.settings_renderer = SettingsOverlayRenderer()
-        self.weapon_custom_renderer = WeaponCustomRenderer()
+        self.settings_renderer = SettingsOverlayRenderer(app)
+        self.weapon_custom_renderer = WeaponCustomRenderer(app)
         self.overlay_router = OverlayRouter(
             self.inventory_renderer,
             self.crafting_renderer,
@@ -77,7 +77,7 @@ class GameplayScene:
             app._dispatch_action_buffer(app.local_player_id)
             command = self.input_controller.build_input_command(app.local_player_id)
             app.world.set_input(command)
-            blocked = app.settings_open or app.backpack_open or app.craft_open or app.weapon_custom_open
+            blocked = app.overlay_state.settings_open or app.overlay_state.backpack_open or app.overlay_state.craft_open or app.overlay_state.weapon_custom_open
             app.world.update(0.0 if blocked else dt)
         elif app.state == "online_game" and app.online.player_id:
             app._dispatch_action_buffer(app.online.player_id)
@@ -117,3 +117,4 @@ class GameplayScene:
                 ctx.perf.icon_cache_misses = ctx.assets.scale_cache.misses
             ctx.perf.draw_ui_ms = (time.perf_counter() - started) * 1000.0
             ctx.perf.ui_render_ms = ctx.perf.draw_ui_ms
+

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from typing import Protocol
 
@@ -16,4 +16,5 @@ class Scene(Protocol):
 
     def render(self, ctx: RenderContext) -> None:
         ...
+
 

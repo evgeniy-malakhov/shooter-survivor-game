@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 
 class FrameScratch:
@@ -33,4 +33,5 @@ class FrameScratch:
         self.spatial_items.clear()
         self.visible_spatial_items.clear()
         self.actor_items.clear()
+
 

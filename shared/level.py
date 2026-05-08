@@ -93,6 +93,7 @@ def tunnel_walls(buildings: dict[str, BuildingState]) -> list[RectState]:
     tunnels = tunnel_segments(buildings)
     if not tunnels:
         return []
+    entrances = [_basement_entry(building) for building in buildings.values()]
 
     unit = 28.0
     min_x = min(rect.x for rect in tunnels) - WALL * 2.0
@@ -121,14 +122,30 @@ def tunnel_walls(buildings: dict[str, BuildingState]) -> list[RectState]:
             x = min_x + col * unit
             y = min_y + row * unit
             if row == 0 or not occupied[row - 1][col]:
-                walls.append(RectState(x, y - edge, unit, edge))
+                wall = RectState(x, y - edge, unit, edge)
+                if not _near_tunnel_entrance(wall, entrances):
+                    walls.append(wall)
             if row == rows - 1 or not occupied[row + 1][col]:
-                walls.append(RectState(x, y + unit, unit, edge))
+                wall = RectState(x, y + unit, unit, edge)
+                if not _near_tunnel_entrance(wall, entrances):
+                    walls.append(wall)
             if col == 0 or not occupied[row][col - 1]:
-                walls.append(RectState(x - edge, y, edge, unit))
+                wall = RectState(x - edge, y, edge, unit)
+                if not _near_tunnel_entrance(wall, entrances):
+                    walls.append(wall)
             if col == cols - 1 or not occupied[row][col + 1]:
-                walls.append(RectState(x + unit, y, edge, unit))
+                wall = RectState(x + unit, y, edge, unit)
+                if not _near_tunnel_entrance(wall, entrances):
+                    walls.append(wall)
     return walls
+
+
+def _near_tunnel_entrance(wall: RectState, entrances: list[Vec2]) -> bool:
+    center = wall.center
+    for entrance in entrances:
+        if abs(center.x - entrance.x) <= 92.0 and abs(center.y - entrance.y) <= 92.0:
+            return True
+    return False
 
 
 def point_building(buildings: dict[str, BuildingState], pos: Vec2) -> str | None:

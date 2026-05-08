@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
@@ -59,3 +59,4 @@ class RenderSpatialIndex:
     def _floors_for_rect(self, rect: pygame.Rect) -> list[int]:
         floors = {key[0] for key in self._cells}
         return list(floors) or [0]
+

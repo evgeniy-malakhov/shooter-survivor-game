@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from typing import Any
 
@@ -32,3 +32,4 @@ class CraftingController:
                         return True
             return True
         return event.type in {pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP}
+

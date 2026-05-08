@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from typing import Any
 
@@ -35,6 +35,13 @@ class WeaponCustomController:
             return True
         if not player:
             return True
+        target = self.app._inventory_target_at(pos, player)
+        if target and target.get("source") == "weapon_module":
+            weapon = player.weapons.get(str(target.get("slot", "")))
+            module_slot = str(target.get("module_slot", ""))
+            if weapon and weapon.modules.get(module_slot):
+                overlay.drag_source = target
+                return True
         for index, slot in enumerate(SLOTS):
             if self.app._weapon_custom_slot_rect(index).collidepoint(pos) and player.weapons.get(slot):
                 overlay.custom_weapon_slot = slot
@@ -58,3 +65,4 @@ class WeaponCustomController:
                 )
                 return True
         return True
+

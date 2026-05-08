@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import pygame
 
@@ -16,4 +16,5 @@ def rect_visible(rect: RectState, view: pygame.Rect, margin: float = 0.0) -> boo
     if margin:
         query = query.inflate(int(margin * 2), int(margin * 2))
     return query.colliderect(view)
+
 

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import math
 import time
@@ -74,3 +74,4 @@ class LoadingRenderer:
         for index in range(8):
             a = angle + index * math.tau / 8.0
             pygame.draw.circle(ctx.screen, (76, 225, 255), (int(rect.centerx + math.cos(a) * 22), int(rect.centery + math.sin(a) * 22)), 4)
+

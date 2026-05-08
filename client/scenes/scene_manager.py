@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from collections.abc import Callable
 
@@ -64,4 +64,5 @@ class SceneManager:
 
     def current_scene(self) -> Scene | None:
         return self._scenes.get(self.state)
+
 

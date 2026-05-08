@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
@@ -34,4 +34,5 @@ class ClientActionBuffer:
     @staticmethod
     def normalize_payload(value: Any) -> dict[str, object]:
         return dict(value) if isinstance(value, dict) else {}
+
 

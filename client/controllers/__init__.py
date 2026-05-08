@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 from __future__ import annotations
 
 from client.controllers.crafting_controller import CraftingController
@@ -18,3 +18,4 @@ __all__ = [
     "ScoreboardController",
     "WeaponCustomController",
 ]
+

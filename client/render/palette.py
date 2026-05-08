@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 BG = (9, 12, 22)
 PANEL = (19, 25, 42)
@@ -11,3 +11,4 @@ RED = (255, 91, 111)
 YELLOW = (255, 210, 112)
 PURPLE = (177, 132, 255)
 MINE_MAP_COLOR = (196, 96, 255)
+

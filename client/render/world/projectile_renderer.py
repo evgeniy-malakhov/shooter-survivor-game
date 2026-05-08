@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import math
 
@@ -34,3 +34,4 @@ class ProjectileRenderer:
             pygame.draw.circle(ctx.screen, (28, 68, 24), (sx, sy), world_size(ctx, 13, 6))
             pygame.draw.circle(ctx.screen, (104, 255, 112), (sx, sy), world_size(ctx, 8, 4))
             pygame.draw.circle(ctx.screen, (220, 255, 180), (sx - 2, sy - 2), world_size(ctx, 3, 2))
+

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from typing import Literal
 
@@ -27,3 +27,4 @@ class AppNavigation:
 
     def quit(self) -> None:
         self.app.running = False
+

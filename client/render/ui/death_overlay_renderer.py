@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import pygame
 
@@ -42,3 +42,4 @@ class DeathOverlayRenderer:
         hint_text = ctx.text.tr("death.online" if online else "death.single")
         hint = ctx.text_cache.render(ctx.fonts.mid, hint_text, palette.CYAN) if ctx.text_cache else ctx.fonts.mid.render(hint_text, True, palette.CYAN)
         ctx.screen.blit(hint, hint.get_rect(center=(ctx.screen.get_width() // 2, ctx.screen.get_height() // 2 + 22)))
+

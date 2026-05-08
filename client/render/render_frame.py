@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
@@ -61,3 +61,4 @@ class RenderFrame:
     players: tuple[PlayerState, ...]
     actor_lod: dict[str, RenderLOD]
     actors: tuple[ActorRenderItem, ...]
+

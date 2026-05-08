@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import math
 
@@ -57,3 +57,4 @@ class SingleSetupRenderer:
             if ctx.text and ctx.fonts:
                 title = app.single_map_titles.get(option, option.replace("_", " ").title())
                 draw_text_fit(ctx, title.upper(), item.inflate(-10, -6), palette.CYAN if option == app.single_map_key else palette.TEXT, ctx.fonts.normal)
+

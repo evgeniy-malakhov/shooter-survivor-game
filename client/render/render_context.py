@@ -8,11 +8,13 @@ import pygame
 from client.core.camera import CameraController
 from client.core.assets import ClientAssets
 from client.core.perf import ClientPerfStats
+from client.core.surface_cache import UISurfaceCache
 from client.effects.visual_effects_state import VisualEffectsState
 from client.controllers.overlay_state import GameplayOverlayState
 from client.render.render_frame import RenderFrame
 from client.render.render_resources import RenderFonts, RenderText
 from client.render.ui.text_cache import TextCache
+from client.perf.render_quality import RenderQualityProfile
 from shared.models import PlayerState, Vec2, WorldSnapshot
 
 
@@ -29,6 +31,7 @@ class RenderContext:
     fonts: RenderFonts | None = None
     text: RenderText | None = None
     text_cache: TextCache | None = None
+    ui_cache: UISurfaceCache | None = None
     overlay: GameplayOverlayState | None = None
     local_player_id: str | None = None
     online_player_id: str | None = None
@@ -38,6 +41,8 @@ class RenderContext:
     perf: ClientPerfStats | None = None
     effects: VisualEffectsState | None = None
     death_tuning: Any | None = None
+    quality: RenderQualityProfile | None = None
+    mouse_pos: tuple[int, int] = (0, 0)
 
     @property
     def visible_rect(self) -> pygame.Rect:

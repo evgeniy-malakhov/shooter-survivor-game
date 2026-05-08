@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import pygame
 
@@ -40,3 +40,4 @@ class ContextPromptRenderer:
         pygame.draw.rect(ctx.screen, palette.PANEL, bg, border_radius=7)
         pygame.draw.rect(ctx.screen, palette.CYAN, bg, 1, border_radius=7)
         ctx.screen.blit(label, label.get_rect(center=bg.center))
+

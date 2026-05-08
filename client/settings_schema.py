@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 
@@ -35,6 +35,10 @@ def tab_has_camera_distance(tab_key: str) -> bool:
     return tab_key == "video"
 
 
+def tab_has_graphics_quality(tab_key: str) -> bool:
+    return tab_key == "video"
+
+
 def tab_has_language(tab_key: str) -> bool:
     return tab_key == "general"
 
@@ -45,3 +49,4 @@ def tab_has_audio_sliders(tab_key: str) -> bool:
 
 def tab_is_stub(tab_key: str) -> bool:
     return tab_key in {"gameplay"}
+

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import math
 
@@ -135,3 +135,4 @@ class ScoreboardRenderer:
         if float(ping_ms) >= 1000.0:
             return "999+"
         return f"{float(ping_ms):.0f} ms"
+

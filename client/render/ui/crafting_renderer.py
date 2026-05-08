@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import pygame
 
@@ -32,3 +32,4 @@ class CraftingRenderer:
                 req = "  ".join(f"{key} x{value}" for key, value in recipe.requires.items())
                 draw_text_fit(ctx, f"=> {result_key} x{amount}    {req}", pygame.Rect(rect.x + 60, rect.y + 32, rect.w - 80, 18), palette.MUTED, ctx.fonts.small)
             y += 68
+

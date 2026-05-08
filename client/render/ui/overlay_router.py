@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import time
 
@@ -36,3 +36,4 @@ class OverlayRouter:
                 self.crafting.render(ctx)
         if ctx.perf:
             ctx.perf.overlay_ms = (time.perf_counter() - started) * 1000.0
+

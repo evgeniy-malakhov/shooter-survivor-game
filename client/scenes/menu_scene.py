@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from typing import Any
 
@@ -50,3 +50,4 @@ class MenuScene:
             elif button.action == "quit":
                 self.app.running = False
             return
+

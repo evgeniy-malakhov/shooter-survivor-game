@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -28,3 +28,4 @@ class RenderText:
     rarity_title: Callable[[str], str]
     loot_label: Callable[[LootState], str]
     floor_label: Callable[[int], str]
+

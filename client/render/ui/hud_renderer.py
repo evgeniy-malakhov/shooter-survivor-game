@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import math
 import time
@@ -173,3 +173,4 @@ class HudRenderer:
         draw_text_fit(ctx, title, pygame.Rect(rect.x + 88, rect.y + 14, 160, 22), palette.TEXT, ctx.fonts.hud_title)
         draw_text_fit(ctx, subtitle, pygame.Rect(rect.x + 88, rect.y + 38, 120, 18), accent, ctx.fonts.small)
         draw_text_fit(ctx, ammo, pygame.Rect(rect.right - 86, rect.y + 52, 64, 24), palette.YELLOW if weapon or quick_item else palette.MUTED, ctx.fonts.hud_value, center=True)
+

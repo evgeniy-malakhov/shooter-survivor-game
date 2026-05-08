@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from typing import Any
 
@@ -7,6 +7,7 @@ import pygame
 from client.settings_schema import (
     tab_has_audio_sliders,
     tab_has_camera_distance,
+    tab_has_graphics_quality,
     tab_has_language,
     tab_is_stub,
     tab_toggle_keys,
@@ -92,9 +93,16 @@ class PauseSettingsController:
                 self.app._save_client_settings()
                 return
             row_index += 1
+        if tab_has_graphics_quality(self.app.settings_tab):
+            quality_rect = pygame.Rect(option_x, viewport.y + row_index * 56 - self.app.options_scroll, option_width, 44)
+            if quality_rect.collidepoint(pos):
+                self.app._cycle_graphics_quality()
+                return
+            row_index += 1
         if tab_has_language(self.app.settings_tab):
             language_rect = pygame.Rect(option_x, viewport.y + row_index * 56 - self.app.options_scroll, option_width, 44)
             if language_rect.collidepoint(pos):
                 languages = sorted(self.app.locales)
                 self.app.language = languages[(languages.index(self.app.language) + 1) % len(languages)]
                 self.app._save_client_settings()
+

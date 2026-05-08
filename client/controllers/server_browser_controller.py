@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import threading
 import time
@@ -85,3 +85,4 @@ class ServerBrowserController:
                 app._pinging = False
 
         threading.Thread(target=worker, name="server-ping", daemon=True).start()
+

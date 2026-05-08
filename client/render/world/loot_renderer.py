@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import math
 
@@ -79,3 +79,4 @@ class LootRenderer:
             pygame.draw.line(ctx.screen, rarity_accent, (sx, sy), (sx + corner * x_dir, sy), width)
             pygame.draw.line(ctx.screen, rarity_accent, (sx, sy), (sx, sy + corner * y_dir), width)
         return rect
+

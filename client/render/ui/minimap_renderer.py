@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import math
 import time
@@ -19,11 +19,27 @@ ONLINE_MINIMAP_MAX_RADIUS = 4200.0
 class MinimapRenderer:
     def __init__(self, cache: MinimapStaticCache | None = None) -> None:
         self.cache = cache or MinimapStaticCache()
+        self._last_dynamic_update_at = 0.0
+        self._last_surface: pygame.Surface | None = None
+        self._last_rect_size: tuple[int, int] | None = None
 
     def render(self, ctx: RenderContext) -> None:
         started = time.perf_counter()
-        if ctx.snapshot:
+        rect = self.rect(ctx)
+        rate = ctx.quality.minimap_update_rate if ctx.quality else 10.0
+        interval = 1.0 / max(1.0, rate)
+        now = ctx.now or time.time()
+        if (
+            self._last_surface is not None
+            and self._last_rect_size == rect.size
+            and now - self._last_dynamic_update_at < interval
+        ):
+            ctx.screen.blit(self._last_surface, rect)
+        elif ctx.snapshot:
             self.paint_minimap(ctx, ctx.snapshot)
+            self._last_surface = ctx.screen.subsurface(rect).copy()
+            self._last_rect_size = rect.size
+            self._last_dynamic_update_at = now
         if ctx.perf:
             ctx.perf.minimap_ms = (time.perf_counter() - started) * 1000.0
             ctx.perf.minimap_cache_hits = self.cache.hits
@@ -126,17 +142,19 @@ class MinimapRenderer:
             )
             mini.clamp_ip(surface.get_rect())
             pygame.draw.rect(surface, (84, 95, 118), mini, 1)
-        for tunnel in tunnel_segments(snapshot.buildings):
-            if not self.rect_intersects_bounds(tunnel, bounds):
-                continue
-            mini = pygame.Rect(
-                int((tunnel.x - min_x) / span_x * rect.w),
-                int((tunnel.y - min_y) / span_y * rect.h),
-                max(2, int(tunnel.w / span_x * rect.w)),
-                max(2, int(tunnel.h / span_y * rect.h)),
-            )
-            mini.clamp_ip(surface.get_rect())
-            pygame.draw.rect(surface, (44, 66, 92), mini, 1)
+        if floor < 0:
+            for tunnel in tunnel_segments(snapshot.buildings):
+                if not self.rect_intersects_bounds(tunnel, bounds):
+                    continue
+                mini = pygame.Rect(
+                    int((tunnel.x - min_x) / span_x * rect.w),
+                    int((tunnel.y - min_y) / span_y * rect.h),
+                    max(1, int(tunnel.w / span_x * rect.w)),
+                    max(1, int(tunnel.h / span_y * rect.h)),
+                )
+                mini.clamp_ip(surface.get_rect())
+                pygame.draw.rect(surface, (35, 52, 76, 52), mini, border_radius=2)
+                pygame.draw.rect(surface, (74, 108, 148, 70), mini, 1, border_radius=2)
         pygame.draw.rect(surface, (78, 108, 140), surface.get_rect(), 1, border_radius=6)
         self.cache.set(key, surface)
         return surface

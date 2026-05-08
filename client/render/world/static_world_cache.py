@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Iterable
@@ -11,10 +11,14 @@ from shared.models import BuildingState, RectState, WorldSnapshot
 
 @dataclass(frozen=True, slots=True)
 class StaticChunkKey:
+    map_id: str
     signature: tuple[int, int, int, int]
     floor: int
+    chunk_size: int
     chunk_x: int
     chunk_y: int
+    quality_profile: str = "default"
+    theme: str = "default"
 
 
 @dataclass(slots=True)
@@ -29,7 +33,7 @@ class StaticWorldChunkCache:
         self.chunk_size = chunk_size
         self._surfaces: dict[StaticChunkKey, pygame.Surface] = {}
         self._scaled: dict[tuple[StaticChunkKey, int], pygame.Surface] = {}
-        self._signature: tuple[int, int, int, int] | None = None
+        self._signature: tuple[str, tuple[int, int, int, int], int, str, str] | None = None
         self.stats = StaticChunkStats()
 
     def signature(self, snapshot: WorldSnapshot) -> tuple[int, int, int, int]:
@@ -40,8 +44,14 @@ class StaticWorldChunkCache:
             sum(len(building.walls) + len(building.props) + len(building.doors) for building in snapshot.buildings.values()),
         )
 
-    def prepare(self, snapshot: WorldSnapshot) -> None:
-        signature = self.signature(snapshot)
+    def prepare(self, snapshot: WorldSnapshot, *, quality_profile: str = "default", theme: str = "default") -> None:
+        signature = (
+            str(getattr(snapshot, "map_id", "default")),
+            self.signature(snapshot),
+            self.chunk_size,
+            quality_profile,
+            theme,
+        )
         if signature == self._signature:
             self.stats = StaticChunkStats()
             return
@@ -54,28 +64,35 @@ class StaticWorldChunkCache:
         if self._signature is None:
             return ()
         size = self.chunk_size
-        map_w = self._signature[0]
-        map_h = self._signature[1]
+        map_id, signature, _chunk_size, quality_profile, theme = self._signature
+        map_w = signature[0]
+        map_h = signature[1]
         left = max(0, view.left // size)
         top = max(0, view.top // size)
         right = min(max(left, view.right // size), max(0, map_w // size))
         bottom = min(max(top, view.bottom // size), max(0, map_h // size))
-        signature = self._signature
         return (
-            StaticChunkKey(signature, floor, chunk_x, chunk_y)
+            StaticChunkKey(map_id, signature, floor, size, chunk_x, chunk_y, quality_profile, theme)
             for chunk_y in range(top, bottom + 1)
             for chunk_x in range(left, right + 1)
         )
 
-    def warm_snapshot(self, snapshot: WorldSnapshot, floors: tuple[int, ...] = (0, -1)) -> None:
-        self.prepare(snapshot)
+    def warm_snapshot(
+        self,
+        snapshot: WorldSnapshot,
+        floors: tuple[int, ...] = (0, -1),
+        *,
+        quality_profile: str = "default",
+        theme: str = "default",
+    ) -> None:
+        self.prepare(snapshot, quality_profile=quality_profile, theme=theme)
         view = pygame.Rect(0, 0, int(snapshot.map_width), int(snapshot.map_height))
         for floor in floors:
             for key in self.visible_keys(view, floor):
                 self.get_or_build(key, snapshot)
 
     def chunk_rect(self, key: StaticChunkKey) -> pygame.Rect:
-        size = self.chunk_size
+        size = key.chunk_size
         return pygame.Rect(key.chunk_x * size, key.chunk_y * size, size, size)
 
     def get_or_build(self, key: StaticChunkKey, snapshot: WorldSnapshot) -> pygame.Surface:
@@ -96,8 +113,6 @@ class StaticWorldChunkCache:
                     if center_line.w > 6 and center_line.h > 6:
                         pygame.draw.rect(surface, (34, 52, 78, 54), center_line, border_radius=7)
                         pygame.draw.rect(surface, (66, 106, 146, 56), center_line, 1, border_radius=7)
-            self._surfaces[key] = surface
-            return surface
         for building in snapshot.buildings.values():
             if not self._rect_intersects(building.bounds, chunk):
                 continue
@@ -121,6 +136,8 @@ class StaticWorldChunkCache:
 
     def _paint_building(self, surface: pygame.Surface, chunk: pygame.Rect, building: BuildingState, floor: int) -> None:
         bounds = self._local_rect(building.bounds, chunk)
+        shadow = bounds.move(8, 10)
+        pygame.draw.rect(surface, (0, 0, 0, 44), shadow, border_radius=5)
         pygame.draw.rect(surface, (15, 20, 30), bounds, border_radius=3)
         pygame.draw.rect(surface, (55, 72, 94), bounds, 2, border_radius=3)
         for wall in building.walls:
@@ -129,18 +146,33 @@ class StaticWorldChunkCache:
         for prop in building.props:
             if prop.floor != floor or not self._rect_intersects(prop.rect, chunk):
                 continue
-            if prop.kind not in {"shelf", "crate", "barrel", "pallet", "roadblock", "desk", "table", "glass_wall"}:
+            if not prop.blocks and prop.kind != "glass_wall":
                 continue
             prop_rect = self._local_rect(prop.rect, chunk)
             if prop.kind == "glass_wall":
                 pygame.draw.rect(surface, (136, 220, 255, 76), prop_rect, border_radius=3)
                 pygame.draw.rect(surface, (196, 246, 255, 122), prop_rect, 2, border_radius=3)
             else:
-                color = (111, 92, 72) if prop.kind in {"desk", "table", "pallet"} else (110, 74, 54) if prop.kind == "barrel" else (82, 96, 124)
+                color = self._prop_color(prop.kind)
+                pygame.draw.rect(surface, (0, 0, 0, 36), prop_rect.move(3, 4), border_radius=2)
                 pygame.draw.rect(surface, color, prop_rect, border_radius=2)
-        for door in building.doors:
-            if door.floor == floor and self._rect_intersects(door.rect, chunk):
-                pygame.draw.rect(surface, (80, 216, 150) if door.open else (255, 209, 102), self._local_rect(door.rect, chunk), border_radius=2)
+                if prop.kind in {"barrel", "glass_wall"}:
+                    light = pygame.Surface(prop_rect.inflate(18, 18).size, pygame.SRCALPHA)
+                    pygame.draw.ellipse(light, (76, 225, 255, 18), light.get_rect())
+                    surface.blit(light, prop_rect.inflate(18, 18), special_flags=pygame.BLEND_RGBA_ADD)
+
+    def _prop_color(self, kind: str) -> tuple[int, int, int]:
+        if kind in {"desk", "table", "pallet", "work_bench", "repair_table"}:
+            return (111, 92, 72)
+        if kind == "barrel":
+            return (110, 74, 54)
+        if kind in {"cabinet", "locker", "shelf"}:
+            return (82, 96, 124)
+        if kind == "bed":
+            return (72, 82, 112)
+        if kind == "roadblock":
+            return (118, 86, 66)
+        return (86, 98, 120)
 
     def _local_rect(self, rect: RectState, chunk: pygame.Rect) -> pygame.Rect:
         return pygame.Rect(

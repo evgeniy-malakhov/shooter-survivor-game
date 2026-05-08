@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import pygame
 
@@ -34,3 +34,4 @@ class ServerBrowserRenderer:
         draw_button(ctx, pygame.Rect(72, 632, 180, 46), ctx.text.tr("servers.back"), pygame.Rect(72, 632, 180, 46).collidepoint(mouse))
         draw_button(ctx, pygame.Rect(270, 632, 180, 46), ctx.text.tr("servers.refresh"), pygame.Rect(270, 632, 180, 46).collidepoint(mouse))
         draw_button(ctx, pygame.Rect(470, 632, 180, 46), ctx.text.tr("servers.connect"), pygame.Rect(470, 632, 180, 46).collidepoint(mouse))
+

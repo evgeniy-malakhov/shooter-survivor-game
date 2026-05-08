@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from typing import Any
 
@@ -23,6 +23,12 @@ class GameplayInputController:
         if key == pygame.K_F4:
             self.app.detailed_perf_overlay = not self.app.detailed_perf_overlay
             self.app.show_perf_overlay = self.app.detailed_perf_overlay or self.app.show_perf_overlay
+            return True
+        if key == pygame.K_F8:
+            self.app.toggle_gc_pacing()
+            return True
+        if key == pygame.K_F9:
+            self.app.toggle_perf_logging()
             return True
         if key == pygame.K_ESCAPE:
             if overlay.weapon_custom_open:
@@ -112,3 +118,4 @@ class GameplayInputController:
             sprint=keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT],
             sneak=keys[pygame.K_LCTRL] or keys[pygame.K_RCTRL],
         )
+

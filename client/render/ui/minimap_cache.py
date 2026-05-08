@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 
@@ -33,3 +33,4 @@ class MinimapStaticCache:
     def set(self, key: MinimapCacheKey, surface: pygame.Surface) -> None:
         self.key = key
         self.surface = surface
+

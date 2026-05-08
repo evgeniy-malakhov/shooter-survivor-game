@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import math
 
@@ -211,3 +211,4 @@ def map_dimensions(ctx: RenderContext) -> tuple[float, float]:
         float(snapshot.map_width if snapshot and snapshot.map_width else MAP_WIDTH),
         float(snapshot.map_height if snapshot and snapshot.map_height else MAP_HEIGHT),
     )
+

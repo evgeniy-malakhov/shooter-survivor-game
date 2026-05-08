@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import math
 import time
@@ -23,6 +23,7 @@ class MapRenderer:
         self.paint_background(ctx)
         static_started = time.perf_counter()
         self.chunked.render_static(ctx, frame)
+        self.paint_doors(ctx, frame)
         if not ctx.local_player or ctx.local_player.floor >= 0:
             self.paint_player_inside_overlay(ctx, frame)
         if ctx.perf:
@@ -88,6 +89,22 @@ class MapRenderer:
                 palette.CYAN,
                 ctx.fonts.label,
             )
+
+    def paint_doors(self, ctx: RenderContext, frame: RenderFrame) -> None:
+        player_floor = ctx.local_player.floor if ctx.local_player else 0
+        for building in frame.buildings:
+            for door in building.doors:
+                if door.floor != player_floor:
+                    continue
+                rect = world_rect_to_screen(ctx, door.rect)
+                if not rect.colliderect(ctx.screen.get_rect().inflate(120, 120)):
+                    continue
+                color = (74, 222, 128) if door.open else (255, 210, 112)
+                border = (181, 255, 210) if door.open else (255, 238, 170)
+                shadow = rect.move(2, 3)
+                pygame.draw.rect(ctx.screen, (0, 0, 0, 70), shadow, border_radius=2)
+                pygame.draw.rect(ctx.screen, color, rect, border_radius=2)
+                pygame.draw.rect(ctx.screen, border, rect, 1, border_radius=2)
 
     def paint_noise_radius(self, ctx: RenderContext) -> None:
         player = ctx.local_player

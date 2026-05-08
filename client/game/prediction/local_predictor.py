@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
@@ -14,4 +14,5 @@ class PredictionState:
     @property
     def correction_px(self) -> float:
         return (self.correction_x * self.correction_x + self.correction_y * self.correction_y) ** 0.5
+
 

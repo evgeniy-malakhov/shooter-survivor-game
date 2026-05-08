@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from typing import Protocol
 
@@ -20,4 +20,5 @@ class RenderPipeline:
     def render(self, ctx: RenderContext) -> None:
         for renderer in self._renderers:
             renderer.render(ctx)
+
 

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import math
 import contextlib
@@ -8,30 +8,31 @@ import threading
 import time
 from collections import deque
 from copy import deepcopy
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from typing import Any
 
-from client.game.online_perf import OnlinePerfStats
 from client.game.prediction.input_history import PendingInputRecord
 from client.game.snapshot_handoff import SnapshotHandoff, SnapshotPacket
+from client.network.connection import movement_payload, open_connection, rect_from_data
+from client.network.delta_applier import decode_snapshot_payload, snapshot_from_message
+from client.network.heartbeat import heartbeat_loop, send_heartbeat, send_state_hash
+from client.network.interpolator import INTERPOLATION_DELAY_SECONDS, estimated_server_time, interpolated_data
+from client.network.online_metrics import OnlinePerfStats
+from client.network.reader import reader_loop
+from client.network.reconnect import resume_loop
+from client.network.snapshot_buffer import BufferedSnapshot
+from client.network.writer import writer_loop
 from shared.collision import move_circle_against_rects
 from shared.constants import MAP_HEIGHT, MAP_WIDTH, PLAYER_RADIUS, SPRINT_MULTIPLIER
-from shared.interpolation import interpolate_snapshot
 from shared.level import tunnel_walls
 from shared.models import BuildingState, InputCommand, RectState, Vec2, WorldSnapshot
-from shared.net_schema import SNAPSHOT_SCHEMA, expand_delta, expand_snapshot
+from shared.net_schema import SNAPSHOT_SCHEMA
 from shared.protocol import FrameDecoder, encode_message
 from shared.protocol_meta import CLIENT_FEATURES, CLIENT_VERSION, PROTOCOL_VERSION
-from shared.snapshot_delta import apply_snapshot_delta
-from shared.state_hash import snapshot_hash
 
 
-INTERPOLATION_DELAY_SECONDS = 0.10
 MAX_INTERPOLATION_BUFFER = 32
 MAX_PENDING_INPUTS = 80
-HEARTBEAT_INTERVAL_SECONDS = 1.0
-RESUME_RETRY_SECONDS = 0.75
-STATE_HASH_INTERVAL_SECONDS = 7.5
 INPUT_SEND_RATE = 25.0
 INPUT_FORCE_INTERVAL_SECONDS = 0.25
 PREDICTION_MAX_FRAME_DT = 1.0 / 30.0
@@ -39,29 +40,6 @@ PREDICTION_CORRECTION_DEADZONE = 36.0
 PREDICTION_HARD_SNAP_DISTANCE = 180.0
 PREDICTION_CORRECTION_SPEED = 14.0
 PREDICTION_CORRECTION_EPSILON = 0.05
-
-
-@dataclass(slots=True)
-class _BufferedSnapshot:
-    tick: int
-    server_time: float
-    received_at: float
-    data: dict[str, Any]
-
-
-def ping_server(host: str, port: int, timeout: float = 0.75) -> tuple[float | None, dict[str, Any] | None]:
-    started = time.perf_counter()
-    try:
-        with socket.create_connection((host, port), timeout=timeout) as sock:
-            sock.settimeout(timeout)
-            sent = time.time()
-            sock.sendall(encode_message("ping", sent=sent))
-            message = _recv_one(sock, FrameDecoder(), [], timeout)
-            if message["type"] != "pong":
-                return None, None
-            return (time.perf_counter() - started) * 1000.0, message
-    except (OSError, ValueError):
-        return None, None
 
 
 class OnlineClient:
@@ -111,7 +89,7 @@ class OnlineClient:
         self._prediction_correction_y = 0.0
         self._collision_cache_key: tuple[int, int, int] | None = None
         self._collision_walls_cache: tuple[RectState, ...] = ()
-        self._snapshot_buffer: deque[_BufferedSnapshot] = deque(maxlen=MAX_INTERPOLATION_BUFFER)
+        self._snapshot_buffer: deque[BufferedSnapshot] = deque(maxlen=MAX_INTERPOLATION_BUFFER)
         self._pending_inputs: deque[PendingInputRecord] = deque(maxlen=MAX_PENDING_INPUTS)
         self._latest_server_time = 0.0
         self._latest_received_at = 0.0
@@ -158,18 +136,7 @@ class OnlineClient:
         port: int,
         payload: bytes,
     ) -> tuple[socket.socket, FrameDecoder, list[dict[str, Any]], dict[str, Any]]:
-        sock = socket.create_connection((host, port), timeout=4.0)
-        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        sock.settimeout(4.0)
-        decoder = FrameDecoder()
-        pending: list[dict[str, Any]] = []
-        sock.sendall(payload)
-        try:
-            first = _recv_one(sock, decoder, pending, 4.0)
-        except (ConnectionError, OSError, TimeoutError, ValueError):
-            sock.close()
-            raise
-        return sock, decoder, pending, first
+        return open_connection(host, port, payload)
 
     def _apply_welcome(
         self,
@@ -224,7 +191,7 @@ class OnlineClient:
             self._snapshot_interval = float(message.get("snapshot_interval", self._snapshot_interval))
             self._snapshot_buffer.clear()
             self._snapshot_buffer.append(
-                _BufferedSnapshot(
+                BufferedSnapshot(
                     self._last_snapshot_tick,
                     self._latest_server_time,
                     self._latest_received_at,
@@ -266,7 +233,7 @@ class OnlineClient:
             return
         try:
             now = time.perf_counter()
-            command_data = _movement_payload(command)
+            command_data = movement_payload(command)
             with self._snapshot_lock:
                 self._predict_local_frame(command_data, now)
             with self._lock:
@@ -433,6 +400,15 @@ class OnlineClient:
         with self._snapshot_lock:
             return self._last_snapshot_tick
 
+    def flush_handoff(self) -> SnapshotPacket | None:
+        packet = self.handoff.latest()
+        if packet is None:
+            return None
+        with self._snapshot_lock:
+            self._last_decode_ms = packet.decode_ms
+            self._update_perf_locked()
+        return packet
+
     def online_perf(self) -> OnlinePerfStats:
         with self._snapshot_lock:
             self._update_perf_locked()
@@ -462,94 +438,19 @@ class OnlineClient:
             self._outbox.put_nowait(payload)
 
     def _write_loop(self, epoch: int) -> None:
-        sock = self._socket
-        try:
-            while self._running and self._connection_epoch == epoch and sock:
-                payload = self._outbox.get()
-                if payload is None:
-                    return
-                sock.sendall(payload)
-        except OSError as exc:
-            if self._connection_epoch == epoch:
-                self.error = str(exc)
-                self._running = False
+        writer_loop(self, epoch)
 
     def _heartbeat_loop(self, epoch: int) -> None:
-        while self._running and self._connection_epoch == epoch and self._socket:
-            now = time.perf_counter()
-            if now - self._last_ping_at >= HEARTBEAT_INTERVAL_SECONDS:
-                self._send_heartbeat()
-            if now - self._last_state_hash_at >= STATE_HASH_INTERVAL_SECONDS:
-                self._send_state_hash()
-            time.sleep(0.1)
+        heartbeat_loop(self, epoch)
 
     def _send_heartbeat(self) -> None:
-        try:
-            self._last_ping_at = time.perf_counter()
-            self._enqueue(
-                encode_message(
-                    "ping",
-                    sent=time.time(),
-                    client_ping_ms=0.0 if self._ping_ms is None else round(self._ping_ms, 2),
-                )
-            )
-        except (OSError, queue.Full, ValueError) as exc:
-            self.error = str(exc)
-            self._running = False
+        send_heartbeat(self)
 
     def _send_state_hash(self) -> None:
-        with self._snapshot_lock:
-            snapshot_data = self._snapshot_data
-            tick = self._last_snapshot_tick
-        if not snapshot_data or tick < 0:
-            return
-        try:
-            self._last_state_hash_at = time.perf_counter()
-            self._enqueue(encode_message("state_hash", tick=tick, hash=snapshot_hash(snapshot_data)))
-        except (OSError, queue.Full, ValueError) as exc:
-            self.error = str(exc)
-            self._running = False
+        send_state_hash(self)
 
     def _read_loop(self, epoch: int) -> None:
-        should_resume = False
-        sock = self._socket
-        try:
-            while self._running and self._connection_epoch == epoch and sock:
-                if self._pending_messages:
-                    message = self._pending_messages.pop(0)
-                else:
-                    chunk = sock.recv(65_536)
-                    if not chunk:
-                        break
-                    messages = self._decoder.feed(chunk)
-                    if not messages:
-                        continue
-                    self._pending_messages.extend(messages[1:])
-                    message = messages[0]
-                self._handle_message(message)
-        except (OSError, ValueError) as exc:
-            if self._connection_epoch == epoch:
-                self.error = str(exc)
-        finally:
-            if self._connection_epoch != epoch:
-                return
-            should_resume = self._should_resume_after_drop()
-            self._running = False
-            if sock:
-                try:
-                    sock.close()
-                except OSError:
-                    pass
-            if self._socket is sock:
-                self._socket = None
-            try:
-                self._outbox.put_nowait(None)
-            except queue.Full:
-                pass
-            if should_resume:
-                self._start_resume_loop()
-            elif not self._manual_close and self._connection_state != "offline":
-                self._connection_state = "lost"
+        reader_loop(self, epoch)
 
     def _handle_message(self, message: dict[str, Any]) -> None:
         message_type = message.get("type")
@@ -568,7 +469,7 @@ class OnlineClient:
                 self._latest_received_at = time.perf_counter()
                 self._snapshot_interval = float(message.get("snapshot_interval", self._snapshot_interval))
                 self._snapshot_buffer.append(
-                    _BufferedSnapshot(
+                    BufferedSnapshot(
                         self._last_snapshot_tick,
                         self._latest_server_time,
                         self._latest_received_at,
@@ -645,31 +546,7 @@ class OnlineClient:
         self._reconnect_thread.start()
 
     def _resume_loop(self) -> None:
-        while not self._manual_close and time.perf_counter() < self._resume_deadline:
-            try:
-                payload = encode_message(
-                    "resume",
-                    player_id=self.player_id,
-                    session_token=self.session_token,
-                    last_snapshot_tick=self._last_snapshot_tick,
-                    client_version=CLIENT_VERSION,
-                    protocol_version=PROTOCOL_VERSION,
-                    snapshot_schema=SNAPSHOT_SCHEMA,
-                    features=CLIENT_FEATURES,
-                )
-                sock, decoder, pending, first = self._open_connection(self._host, self._port, payload)
-                if first.get("type") != "welcome":
-                    sock.close()
-                    raise ConnectionError(str(first.get("message", "resume refused")))
-                self._manual_close = False
-                self._apply_welcome(sock, decoder, pending, first, reset_session=False)
-                return
-            except (OSError, ConnectionError, TimeoutError, ValueError) as exc:
-                self.error = f"reconnecting: {exc}"
-                time.sleep(RESUME_RETRY_SECONDS)
-        if not self._manual_close:
-            self._connection_state = "lost"
-            self.error = "connection lost"
+        resume_loop(self)
 
     def _resend_pending_commands(self) -> None:
         with self._snapshot_lock:
@@ -691,23 +568,12 @@ class OnlineClient:
                 return
 
     def _snapshot_from_message(self, message: dict[str, Any]) -> dict[str, Any] | None:
-        started = time.perf_counter()
-        if message.get("full", True) or "snapshot" in message:
-            snapshot = message.get("snapshot")
-            result = self._decode_snapshot_payload(snapshot, message.get("schema")) if isinstance(snapshot, dict) else None
-            self._last_decode_ms = (time.perf_counter() - started) * 1000.0
-            return result
-        delta = message.get("delta")
-        if not isinstance(delta, dict) or self._snapshot_data is None:
-            return None
-        if message.get("schema") == SNAPSHOT_SCHEMA:
-            delta = expand_delta(delta)
-        result = apply_snapshot_delta(self._snapshot_data, delta)
-        self._last_decode_ms = (time.perf_counter() - started) * 1000.0
+        result, decode_ms = snapshot_from_message(self._snapshot_data, message)
+        self._last_decode_ms = decode_ms
         return result
 
     def _decode_snapshot_payload(self, snapshot: dict[str, Any], schema: object) -> dict[str, Any]:
-        return expand_snapshot(snapshot) if schema == SNAPSHOT_SCHEMA or snapshot.get("v") == 1 else snapshot
+        return decode_snapshot_payload(snapshot, schema)
 
     def _drop_acked_inputs(self) -> None:
         while self._pending_inputs and self._pending_inputs[0].seq <= self._ack_input_seq:
@@ -755,21 +621,10 @@ class OnlineClient:
         return data
 
     def _estimated_server_time(self, now: float) -> float:
-        if self._latest_received_at <= 0.0:
-            return self._latest_server_time
-        return self._latest_server_time + max(0.0, now - self._latest_received_at)
+        return estimated_server_time(now, self._latest_server_time, self._latest_received_at)
 
     def _interpolated_data(self, render_time: float) -> dict[str, Any] | None:
-        if len(self._snapshot_buffer) < 2:
-            return self._snapshot_data
-        previous = self._snapshot_buffer[0]
-        for current in list(self._snapshot_buffer)[1:]:
-            if current.server_time >= render_time:
-                span = max(0.0001, current.server_time - previous.server_time)
-                alpha = (render_time - previous.server_time) / span
-                return interpolate_snapshot(previous.data, current.data, alpha, self.player_id)
-            previous = current
-        return self._snapshot_buffer[-1].data
+        return interpolated_data(self._snapshot_buffer, self._snapshot_data, render_time, self.player_id)
 
     def _apply_local_prediction(self, data: dict[str, Any]) -> None:
         if not self.player_id or not self._snapshot_data:
@@ -947,7 +802,7 @@ class OnlineClient:
                     parsed = BuildingState.from_dict(building)
                     parsed_buildings[parsed.id] = parsed
                 for wall_data in building.get("walls") or []:
-                    wall = _rect_from_data(wall_data)
+                    wall = rect_from_data(wall_data)
                     if wall:
                         walls.append(wall)
                 for prop in building.get("props") or []:
@@ -955,7 +810,7 @@ class OnlineClient:
                         continue
                     if int(prop.get("floor", 0)) != floor or not bool(prop.get("blocks", True)):
                         continue
-                    wall = _rect_from_data(prop.get("rect"))
+                    wall = rect_from_data(prop.get("rect"))
                     if wall:
                         walls.append(wall)
                 for door in building.get("doors") or []:
@@ -963,7 +818,7 @@ class OnlineClient:
                         continue
                     if bool(door.get("open", False)) or int(door.get("floor", 0)) != floor:
                         continue
-                    wall = _rect_from_data(door.get("rect"))
+                    wall = rect_from_data(door.get("rect"))
                     if wall:
                         walls.append(wall)
             if floor == -1 and parsed_buildings:
@@ -973,45 +828,4 @@ class OnlineClient:
         return self._collision_walls_cache
 
 
-def _recv_one(
-    sock: socket.socket,
-    decoder: FrameDecoder,
-    pending: list[dict[str, Any]],
-    timeout: float,
-) -> dict[str, Any]:
-    if pending:
-        return pending.pop(0)
-    deadline = time.perf_counter() + timeout
-    while time.perf_counter() < deadline:
-        chunk = sock.recv(65_536)
-        if not chunk:
-            raise ConnectionError("server closed connection")
-        messages = decoder.feed(chunk)
-        if messages:
-            pending.extend(messages[1:])
-            return messages[0]
-    raise TimeoutError("server did not respond")
 
-
-def _rect_from_data(data: object) -> RectState | None:
-    if not isinstance(data, dict):
-        return None
-    try:
-        rect = RectState.from_dict(data)
-    except (TypeError, ValueError):
-        return None
-    if rect.w <= 0.0 or rect.h <= 0.0:
-        return None
-    return rect
-
-
-def _movement_payload(command: InputCommand) -> dict[str, Any]:
-    return {
-        "move_x": round(command.move_x, 3),
-        "move_y": round(command.move_y, 3),
-        "aim_x": round(command.aim_x, 3),
-        "aim_y": round(command.aim_y, 3),
-        "shooting": command.shooting,
-        "sprint": command.sprint,
-        "sneak": command.sneak,
-    }

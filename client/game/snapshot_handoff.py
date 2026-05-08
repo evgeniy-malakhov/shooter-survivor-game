@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
@@ -32,4 +32,5 @@ class SnapshotHandoff:
     def clear(self) -> None:
         with self._lock:
             self._latest = None
+
 

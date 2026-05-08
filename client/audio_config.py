@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 from dataclasses import dataclass
@@ -133,3 +133,4 @@ def _float(data: dict[str, Any], key: str, default: float, *, minimum: float) ->
     except (TypeError, ValueError):
         value = default
     return max(minimum, value)
+

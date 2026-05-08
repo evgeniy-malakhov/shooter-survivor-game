@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from client.render.world.actor_renderer import ActorRenderer
 from client.render.world.debug_renderer import DebugRenderer
@@ -19,3 +19,4 @@ __all__ = [
     "ProjectileRenderer",
     "WorldRenderer",
 ]
+

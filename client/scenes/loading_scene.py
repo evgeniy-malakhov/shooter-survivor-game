@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from typing import Any
 
@@ -26,3 +26,4 @@ class LoadingScene:
 
     def render(self, ctx: RenderContext) -> None:
         self.renderer.render(ctx)
+

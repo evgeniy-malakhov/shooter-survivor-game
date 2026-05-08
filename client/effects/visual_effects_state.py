@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass, field
 
@@ -9,3 +9,4 @@ class VisualEffectsState:
     explosion_effects: list[dict[str, object]] = field(default_factory=list)
     death_effects: list[dict[str, object]] = field(default_factory=list)
     join_notifications: list[dict[str, object]] = field(default_factory=list)
+

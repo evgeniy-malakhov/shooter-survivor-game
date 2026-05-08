@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
@@ -38,4 +38,5 @@ class FrameBudgetController:
             self.state.suggested_lod_bias = 1.0
             self.state.suggested_render_radius_scale = 1.0
         return self.state
+
 

@@ -1,10 +1,11 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import pygame
 
 from client.settings_schema import (
     tab_has_audio_sliders,
     tab_has_camera_distance,
+    tab_has_graphics_quality,
     tab_has_language,
     tab_is_stub,
     tab_toggle_keys,
@@ -79,6 +80,12 @@ class OptionsController:
                 nearest = min(cycle, key=lambda value: abs(value - app.camera_distance))
                 app.camera_distance = cycle[(cycle.index(nearest) + 1) % len(cycle)]
                 app._save_client_settings()
+                return
+            row_index += 1
+        if tab_has_graphics_quality(app.settings_tab):
+            quality_rect = pygame.Rect(option_x, viewport.y + row_index * 56 - app.options_scroll, option_width, 44)
+            if quality_rect.collidepoint(pos):
+                app._cycle_graphics_quality()
                 return
             row_index += 1
         if tab_has_language(app.settings_tab):

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from typing import Any
 
@@ -26,3 +26,4 @@ class ScoreboardController:
     def scroll(self, overlay: GameplayOverlayState, snapshot: WorldSnapshot, direction: int) -> None:
         max_scroll = max(0, len(snapshot.players) * 52 - (520 - 176) + 12)
         overlay.scoreboard_scroll = max(0, min(max_scroll, overlay.scoreboard_scroll + direction * 36))
+

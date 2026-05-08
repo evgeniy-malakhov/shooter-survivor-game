@@ -6,13 +6,15 @@ import pygame
 
 from client.core.frame_scratch import FrameScratch
 from client.core.perf import ClientPerfStats
+from client.perf.render_quality import RenderQualityProfile
+from client.render.render_item_pool import ActorRenderItemPool
 from client.visibility.spatial_index import RenderSpatialIndex, RenderSpatialItem
 from client.visibility.render_culling import rect_visible
 from shared.level import tunnel_segments
 from shared.constants import SOLDIERS, ZOMBIES
 from shared.models import PlayerState, Vec2, WorldSnapshot
 
-from client.render.render_frame import ActorRenderItem, RenderFrame, RenderLOD
+from client.render.render_frame import RenderFrame, RenderLOD
 
 
 class RenderFrameBuilder:
@@ -20,6 +22,8 @@ class RenderFrameBuilder:
         self.margin = margin
         self.dynamic_index = RenderSpatialIndex(cell_size=512)
         self.scratch = FrameScratch()
+        self.quality = RenderQualityProfile()
+        self.actor_item_pool = ActorRenderItemPool()
 
     def build(
         self,
@@ -35,15 +39,19 @@ class RenderFrameBuilder:
         floor = local_player.floor if local_player else None
         origin = local_player.pos if local_player else None
         local_player_id = local_player.id if local_player else ""
+        render_margin = self.margin * self.quality.render_radius_multiplier
+        lod_bias = max(0, int(self.quality.actor_lod_bias))
+        full_lod_distance = max(420.0, 900.0 - lod_bias * 150.0)
+        simple_lod_distance = max(full_lod_distance + 260.0, 1700.0 - lod_bias * 230.0)
 
         def lod_for(prefix: str, entity_id: str, pos: Vec2) -> None:
             if origin is None:
                 actor_lod[f"{prefix}:{entity_id}"] = RenderLOD.FULL
                 return
             distance = origin.distance_to(pos)
-            if distance <= 900.0:
+            if distance <= full_lod_distance:
                 lod = RenderLOD.FULL
-            elif distance <= 1700.0:
+            elif distance <= simple_lod_distance:
                 lod = RenderLOD.SIMPLE
             else:
                 lod = RenderLOD.DOT
@@ -52,15 +60,15 @@ class RenderFrameBuilder:
         actor_lod: dict[str, RenderLOD] = {}
 
         for building in snapshot.buildings.values():
-            if rect_visible(building.bounds, view, self.margin):
+            if rect_visible(building.bounds, view, render_margin):
                 scratch.visible_buildings.append(building)
         for tunnel in tunnel_segments(snapshot.buildings):
-            if rect_visible(tunnel, view, self.margin):
+            if rect_visible(tunnel, view, render_margin):
                 scratch.visible_tunnels.append(tunnel)
         spatial_started = time.perf_counter()
         self._fill_dynamic_spatial_items(snapshot, scratch.spatial_items)
         self.dynamic_index.rebuild(scratch.spatial_items)
-        query_rect = view.inflate(int(self.margin * 2.0), int(self.margin * 2.0))
+        query_rect = view.inflate(int(render_margin * 2.0), int(render_margin * 2.0))
         self.dynamic_index.query_into(query_rect, scratch.visible_spatial_items, floor)
         spatial_query_ms = (time.perf_counter() - spatial_started) * 1000.0
 
@@ -88,7 +96,7 @@ class RenderFrameBuilder:
             lod_for("zombie", zombie.id, zombie.pos)
             spec = ZOMBIES.get(zombie.kind, ZOMBIES["walker"])
             scratch.actor_items.append(
-                ActorRenderItem(
+                self.actor_item_pool.actor(
                     id=zombie.id,
                     actor_type="zombie",
                     kind=zombie.kind,
@@ -110,7 +118,7 @@ class RenderFrameBuilder:
             spec = SOLDIERS.get(soldier.kind)
             if spec:
                 scratch.actor_items.append(
-                    ActorRenderItem(
+                    self.actor_item_pool.actor(
                         id=soldier.id,
                         actor_type="soldier",
                         kind=soldier.kind,
@@ -130,7 +138,7 @@ class RenderFrameBuilder:
         for player in scratch.visible_players:
             lod_for("player", player.id, player.pos)
             scratch.actor_items.append(
-                ActorRenderItem(
+                self.actor_item_pool.actor(
                     id=player.id,
                     actor_type="player",
                     kind="player",

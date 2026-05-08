@@ -14,6 +14,13 @@ class ClientPerfStats:
     scene_render_ms: float = 0.0
     controller_ms: float = 0.0
     ui_render_ms: float = 0.0
+    input_phase_ms: float = 0.0
+    network_handoff_phase_ms: float = 0.0
+    session_update_phase_ms: float = 0.0
+    prediction_phase_ms: float = 0.0
+    render_phase_ms: float = 0.0
+    audio_effects_phase_ms: float = 0.0
+    perf_log_phase_ms: float = 0.0
     hud_ms: float = 0.0
     minimap_ms: float = 0.0
     overlay_ms: float = 0.0
@@ -55,6 +62,12 @@ class ClientPerfStats:
     over_budget_frames: int = 0
     suggested_lod_bias: float = 1.0
     suggested_render_radius_scale: float = 1.0
+    quality_render_radius_multiplier: float = 1.0
+    quality_actor_lod_bias: int = 0
+    quality_effects_quality: float = 1.0
+    quality_minimap_update_rate: float = 10.0
+    quality_recommendation: str = "stable"
+    quality_observe_only: bool = True
 
     def reset_visible_counts(self) -> None:
         self.visible_players = 0

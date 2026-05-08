@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from client.input.action_buffer import ClientAction
 from shared.models import ClientCommand, InputCommand, WorldSnapshot
@@ -37,4 +37,5 @@ class SingleSession:
 
     def close(self) -> None:
         self.world.close()
+
 

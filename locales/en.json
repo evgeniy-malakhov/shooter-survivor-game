@@ -56,6 +56,7 @@
   "settings.fullscreen": "Fullscreen",
   "settings.player_name": "Player name",
   "settings.bot_density": "Bot density",
+  "settings.graphics_quality": "Graphics quality",
   "settings.difficulty": "Difficulty",
   "settings.language": "Language",
   "settings.camera_distance": "Camera distance",

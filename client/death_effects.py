@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 from dataclasses import dataclass
@@ -67,3 +67,4 @@ def _int(data: dict[str, Any], key: str, default: int, *, minimum: int, maximum:
         value = default
     value = max(minimum, value)
     return min(maximum, value) if maximum is not None else value
+

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 from dataclasses import dataclass
@@ -112,3 +112,4 @@ class ClientAssets:
         for key in tuple(self.item_images.keys()):
             for size in sizes:
                 self.scaled_icon(key, size)
+

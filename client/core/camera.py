@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import math
 from dataclasses import dataclass
@@ -84,3 +84,4 @@ class CameraController:
         w = int(self.viewport_size[0] / zoom + margin * 2)
         h = int(self.viewport_size[1] / zoom + margin * 2)
         return pygame.Rect(x, y, max(1, w), max(1, h))
+

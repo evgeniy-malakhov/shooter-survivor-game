@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
@@ -9,4 +9,5 @@ class PendingInputRecord:
     seq: int
     command: dict[str, Any]
     dt: float
+
 

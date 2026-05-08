@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from collections.abc import Iterable
 from typing import Any
@@ -44,4 +44,5 @@ class DictEffectPool:
             else:
                 self.release(effect)
         del effects[write_index:]
+
 

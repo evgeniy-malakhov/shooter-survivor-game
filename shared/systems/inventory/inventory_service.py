@@ -164,7 +164,8 @@ class InventoryService:
             return True
 
         if spec.kind == "ammo":
-            if not self.use_item(player, item):
+            target_slot = str(action.get("target_slot", ""))
+            if not self.use_item(player, item, target_slot=target_slot):
                 return False
 
             if source == "backpack":
@@ -508,7 +509,7 @@ class InventoryService:
             None,
         )
 
-    def use_item(self, player: PlayerState, item: InventoryItem) -> bool:
+    def use_item(self, player: PlayerState, item: InventoryItem, *, target_slot: str = "") -> bool:
         spec = ITEMS.get(item.key)
 
         if not spec:
@@ -522,6 +523,12 @@ class InventoryService:
             return True
 
         if spec.kind == "ammo":
+            if target_slot:
+                weapon = player.weapons.get(target_slot)
+                if not weapon:
+                    return False
+                weapon.reserve_ammo += 12 * item.amount
+                return True
             for weapon in player.weapons.values():
                 weapon.reserve_ammo += 12 * item.amount
             return True

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 
@@ -23,4 +23,5 @@ class OnlinePerfStats:
     server_interest_radius: float = 0.0
     minimap_radius: float = 0.0
     audio_radius: float = 0.0
+
 

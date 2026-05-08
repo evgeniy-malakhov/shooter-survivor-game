@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from client.input.action_buffer import ClientAction
 from client.network import OnlineClient
@@ -27,4 +27,5 @@ class OnlineSession:
 
     def close(self) -> None:
         self.client.close()
+
 

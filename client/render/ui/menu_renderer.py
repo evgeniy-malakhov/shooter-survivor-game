@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import math
 
@@ -68,3 +68,4 @@ class MenuRenderer:
             draw_item_icon(ctx, image_key, image_rect.inflate(-8, -8), aura=False, shadow=False)
             draw_text(ctx, title, rect.x + 80, rect.y + 10, palette.TEXT, ctx.fonts.mid)
             draw_text(ctx, body, rect.x + 82, rect.y + 44, palette.MUTED, ctx.fonts.small)
+

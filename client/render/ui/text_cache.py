@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from collections import OrderedDict
 
@@ -25,3 +25,4 @@ class TextCache:
         if len(self._cache) > self.max_entries:
             self._cache.popitem(last=False)
         return surface
+

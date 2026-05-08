@@ -1,2 +1,3 @@
-"""Client performance helpers."""
+﻿"""Client performance helpers."""
+
 

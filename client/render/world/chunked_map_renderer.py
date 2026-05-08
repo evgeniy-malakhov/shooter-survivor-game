@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import pygame
 
@@ -16,7 +16,10 @@ class ChunkedMapRenderer:
         floor = player.floor if player else 0
         if floor < 0:
             return
-        self.cache.prepare(frame.snapshot)
+        quality_key = "default"
+        if ctx.quality:
+            quality_key = f"r{ctx.quality.render_radius_multiplier:.2f}:lod{ctx.quality.actor_lod_bias}:fx{ctx.quality.effects_quality:.2f}"
+        self.cache.prepare(frame.snapshot, quality_profile=quality_key, theme=str(ctx.settings.get("theme", "default")))
         view = ctx.camera_controller.visible_world_rect(ctx.camera, margin=160.0)
         zoom = max(0.1, ctx.camera_controller.zoom)
         for key in self.cache.visible_keys(view, floor):
@@ -36,4 +39,5 @@ class ChunkedMapRenderer:
             ctx.perf.visible_chunks = self.cache.stats.visible
             ctx.perf.static_chunk_hits = self.cache.stats.hits
             ctx.perf.static_chunk_misses = self.cache.stats.misses
+
 

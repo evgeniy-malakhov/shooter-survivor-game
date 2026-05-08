@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Callable
@@ -72,6 +72,42 @@ class PanelSurfaceCache:
         surface = pygame.Surface((key[0], key[1]), pygame.SRCALPHA)
         pygame.draw.rect(surface, fill, surface.get_rect(), border_radius=radius)
         pygame.draw.rect(surface, outline, surface.get_rect(), 1, border_radius=radius)
+        self._cache[key] = surface
+        if len(self._cache) > self.max_entries:
+            self._cache.popitem(last=False)
+        return surface
+
+
+class UISurfaceCache:
+    def __init__(self, max_entries: int = 512) -> None:
+        self.max_entries = max_entries
+        self._cache: OrderedDict[tuple[object, ...], pygame.Surface] = OrderedDict()
+        self.hits = 0
+        self.misses = 0
+
+    def rounded_rect(
+        self,
+        name: str,
+        size: tuple[int, int],
+        fill: tuple[int, int, int] | tuple[int, int, int, int],
+        outline: tuple[int, int, int] | tuple[int, int, int, int] | None = None,
+        *,
+        outline_width: int = 1,
+        radius: int = 8,
+    ) -> pygame.Surface:
+        width = max(1, int(size[0]))
+        height = max(1, int(size[1]))
+        key = (name, width, height, fill, outline, outline_width, radius)
+        cached = self._cache.get(key)
+        if cached is not None:
+            self.hits += 1
+            self._cache.move_to_end(key)
+            return cached
+        self.misses += 1
+        surface = pygame.Surface((width, height), pygame.SRCALPHA)
+        pygame.draw.rect(surface, fill, surface.get_rect(), border_radius=radius)
+        if outline is not None and outline_width > 0:
+            pygame.draw.rect(surface, outline, surface.get_rect(), outline_width, border_radius=radius)
         self._cache[key] = surface
         if len(self._cache) > self.max_entries:
             self._cache.popitem(last=False)

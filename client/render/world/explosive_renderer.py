@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import math
 
@@ -117,3 +117,4 @@ class ExplosiveRenderer:
             p2 = (int(local_center[0] + math.cos(a2) * radius), int(local_center[1] + math.sin(a2) * radius))
             pygame.draw.line(surface, (*color, alpha), p1, p2, 2)
         ctx.screen.blit(surface, (center[0] - radius - 8, center[1] - radius - 8))
+

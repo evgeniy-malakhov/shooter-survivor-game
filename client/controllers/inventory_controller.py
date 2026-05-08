@@ -1,10 +1,11 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from typing import Any
 
 import pygame
 
 from shared.constants import WEAPONS
+from shared.items import ITEMS
 
 
 class InventoryController:
@@ -36,8 +37,13 @@ class InventoryController:
                 return True
             if event.button == 3:
                 target = self.app._inventory_target_at(pos, player)
-                if target and target.get("source") == "backpack":
-                    self.app.actions.push("inventory_action", {"type": "use", "index": target["index"]})
+                if target and target.get("source") in {"backpack", "quick_item"}:
+                    action: dict[str, object] = {"type": "use", "src": target["source"]}
+                    if target["source"] == "backpack":
+                        action["index"] = target["index"]
+                    else:
+                        action["slot"] = target["slot"]
+                    self.app.actions.push("inventory_action", action)
                     return True
             return True
         if event.type == pygame.MOUSEBUTTONUP and event.button == 1 and overlay.drag_source:
@@ -74,6 +80,16 @@ class InventoryController:
             return {"type": "quick_swap", "a": source["slot"], "b": target["slot"]}
         payload = self.app._dragged_payload(player)
         payload_key = payload[0] if payload else ""
+        payload_spec = ITEMS.get(payload_key)
+        if payload_spec and payload_spec.kind == "ammo" and target["source"] == "weapon_slot":
+            action = {"type": "use", "src": source["source"], "target_slot": target["slot"]}
+            if source["source"] == "backpack":
+                action["index"] = source["index"]
+            elif source["source"] == "quick_item":
+                action["slot"] = source["slot"]
+            else:
+                return None
+            return action
         dst = "weapon_slot" if target["source"] == "weapon_slot" and payload_key in WEAPONS else "quick_item" if target["source"] == "weapon_slot" else target["source"]
         action: dict[str, object] = {"type": "move", "src": source["source"], "dst": dst}
         if source["source"] == "backpack":
@@ -88,6 +104,7 @@ class InventoryController:
         elif dst == "weapon_module":
             action["dst_slot"] = target["slot"]
             action["dst_module"] = target["module_slot"]
-        elif dst in {"equipment", "quick_item"}:
+        elif dst in {"equipment", "quick_item", "weapon_slot"}:
             action["dst_slot"] = target["slot"]
         return action
+

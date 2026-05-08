@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import pygame
 
@@ -61,4 +61,5 @@ class SingleSetupController:
         elif rows[3].collidepoint(pos) and app.single_bots_enabled:
             app.bot_density = DENSITY_ORDER[(DENSITY_ORDER.index(app.bot_density) + 1) % len(DENSITY_ORDER)]
         app._save_client_settings()
+
 

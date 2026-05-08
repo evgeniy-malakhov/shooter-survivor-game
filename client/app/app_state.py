@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from enum import Enum
 
@@ -34,3 +34,4 @@ def normalize_app_state(value: str | AppState) -> AppState:
         return AppState(str(value))
     except ValueError:
         return AppState.MENU
+

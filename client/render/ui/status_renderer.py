@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import math
 
@@ -78,3 +78,4 @@ class StatusRenderer:
         if not draw_item_icon(ctx, quality, icon_rect, aura=False, shadow=False):
             pygame.draw.circle(ctx.screen, color, icon_rect.center, 8)
         draw_text_fit(ctx, text, pygame.Rect(rect.x + 46, rect.y + 9, rect.w - 62, 18), palette.TEXT, ctx.fonts.small, center=True)
+

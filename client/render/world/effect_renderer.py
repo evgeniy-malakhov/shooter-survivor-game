@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import math
 
@@ -15,10 +15,15 @@ class EffectRenderer:
     def render_blood(self, ctx: RenderContext) -> None:
         if not ctx.effects:
             return
+        if ctx.quality and not ctx.quality.particles_enabled:
+            return
         now = ctx.now or 0.0
         tuning = ctx.death_tuning
         blood_seconds = float(getattr(tuning, "blood_seconds", 4.0))
-        for effect in ctx.effects.death_effects:
+        effects = ctx.effects.death_effects
+        if ctx.quality:
+            effects = effects[: max(2, int(len(effects) * ctx.quality.effects_quality))]
+        for effect in effects:
             if ctx.local_player and int(effect.get("floor", 0)) != ctx.local_player.floor:
                 continue
             age = now - float(effect.get("started", now))
@@ -127,8 +132,13 @@ class EffectRenderer:
     def paint_explosion_effects(self, ctx: RenderContext) -> None:
         if not ctx.effects:
             return
+        if ctx.quality and ctx.quality.effects_quality <= 0.3:
+            return
         now = ctx.now or 0.0
-        for fx in ctx.effects.explosion_effects:
+        effects = ctx.effects.explosion_effects
+        if ctx.quality:
+            effects = effects[: max(1, int(len(effects) * ctx.quality.effects_quality))]
+        for fx in effects:
             if ctx.local_player and int(fx.get("floor", 0)) != ctx.local_player.floor:
                 continue
             pos = fx.get("pos")
@@ -149,3 +159,4 @@ class EffectRenderer:
             pygame.draw.circle(blast, (255, 238, 210, int(120 * spike)), center, max(8, int(flash_radius * 0.55)))
             pygame.draw.circle(blast, (*color, int(66 * spike)), center, max(10, int(flash_radius * 1.16)), 2)
             ctx.screen.blit(blast, (sx - center[0], sy - center[1]))
+

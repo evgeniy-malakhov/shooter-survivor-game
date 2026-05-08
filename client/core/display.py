@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 
@@ -92,4 +92,5 @@ class DisplayManager:
             scaled = pygame.transform.smoothscale(self.screen, self.render_rect.size)
             self.display.blit(scaled, self.render_rect)
         pygame.display.flip()
+
 
