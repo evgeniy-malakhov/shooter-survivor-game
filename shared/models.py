@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from math import atan2, hypot
 from typing import Any
 
+from shared.factions import FACTION_INFECTED, FACTION_MILITARY, FACTION_SURVIVORS, normalize_faction
+
 
 def clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
@@ -347,6 +349,8 @@ class PlayerState:
     notice_timer: float = 0.0
     ping_ms: int = 0
     connection_quality: str = "stable"
+    faction: str = FACTION_SURVIVORS
+    squad_id: str | None = None
     weapons: dict[str, WeaponRuntime] = field(default_factory=dict)
 
     def active_weapon(self) -> WeaponRuntime | None:
@@ -388,6 +392,8 @@ class PlayerState:
             "notice_timer": round(self.notice_timer, 3),
             "ping_ms": self.ping_ms,
             "connection_quality": self.connection_quality,
+            "faction": self.faction,
+            "squad_id": self.squad_id,
             "weapons": {slot: weapon.to_dict() for slot, weapon in self.weapons.items()},
         }
 
@@ -434,6 +440,8 @@ class PlayerState:
             notice_timer=float(data.get("notice_timer", 0.0)),
             ping_ms=int(data.get("ping_ms", 0)),
             connection_quality=str(data.get("connection_quality", "stable")),
+            faction=normalize_faction(data.get("faction"), FACTION_SURVIVORS),
+            squad_id=str(data["squad_id"]) if data.get("squad_id") else None,
         )
         player.weapons = {
             str(slot): WeaponRuntime.from_dict(weapon)
@@ -464,8 +472,12 @@ class SoldierState:
 
     attack_cooldown: float = 0.0
     grenade_cooldown: float = 0.0
+    support_cooldown: float = 0.0
     idle_timer: float = 0.0
     alertness: float = 0.0
+    faction: str = FACTION_MILITARY
+    squad_id: str | None = None
+    ai_memory: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -487,8 +499,12 @@ class SoldierState:
             "last_known_pos": self.last_known_pos.to_dict() if self.last_known_pos else None,
             "attack_cooldown": round(self.attack_cooldown, 3),
             "grenade_cooldown": round(self.grenade_cooldown, 3),
+            "support_cooldown": round(self.support_cooldown, 3),
             "idle_timer": round(self.idle_timer, 3),
             "alertness": round(self.alertness, 3),
+            "faction": self.faction,
+            "squad_id": self.squad_id,
+            "ai_memory": [dict(item) for item in self.ai_memory],
         }
 
     @classmethod
@@ -520,8 +536,12 @@ class SoldierState:
             last_known_pos=Vec2.from_dict(data["last_known_pos"]) if data.get("last_known_pos") else None,
             attack_cooldown=float(data.get("attack_cooldown", 0.0)),
             grenade_cooldown=float(data.get("grenade_cooldown", 0.0)),
+            support_cooldown=float(data.get("support_cooldown", 0.0)),
             idle_timer=float(data.get("idle_timer", 0.0)),
             alertness=float(data.get("alertness", 0.0)),
+            faction=normalize_faction(data.get("faction"), FACTION_MILITARY),
+            squad_id=str(data["squad_id"]) if data.get("squad_id") else None,
+            ai_memory=[dict(item) for item in data.get("ai_memory", []) if isinstance(item, dict)],
         )
 
 
@@ -549,6 +569,8 @@ class ZombieState:
     sidestep_timer: float = 0.0
     floor: int = 0
     inside_building: str | None = None
+    faction: str = FACTION_INFECTED
+    ai_memory: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -574,6 +596,8 @@ class ZombieState:
             "sidestep_timer": round(self.sidestep_timer, 3),
             "floor": self.floor,
             "inside_building": self.inside_building,
+            "faction": self.faction,
+            "ai_memory": [dict(item) for item in self.ai_memory],
         }
 
     @classmethod
@@ -601,6 +625,8 @@ class ZombieState:
             sidestep_timer=float(data.get("sidestep_timer", 0.0)),
             floor=int(data.get("floor", 0)),
             inside_building=data.get("inside_building"),
+            faction=normalize_faction(data.get("faction"), FACTION_INFECTED),
+            ai_memory=[dict(item) for item in data.get("ai_memory", []) if isinstance(item, dict)],
         )
 
 

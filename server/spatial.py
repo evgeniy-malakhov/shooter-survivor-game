@@ -8,6 +8,7 @@ from typing import Any
 
 POSITION_COLLECTIONS = (
     "zombies",
+    "soldiers",
     "projectiles",
     "grenades",
     "mines",

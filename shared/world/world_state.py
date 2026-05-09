@@ -19,6 +19,7 @@ from shared.models import (
     ZombieState,
 )
 from shared.ai.context import SoundEvent
+from shared.ai.squads import SquadState
 
 
 @dataclass(slots=True)
@@ -31,6 +32,7 @@ class WorldState:
     players: dict[str, PlayerState] = field(default_factory=dict)
     zombies: dict[str, ZombieState] = field(default_factory=dict)
     soldiers: dict[str, SoldierState] = field(default_factory=dict)
+    squads: dict[str, SquadState] = field(default_factory=dict)
 
     projectiles: dict[str, ProjectileState] = field(default_factory=dict)
     grenades: dict[str, GrenadeState] = field(default_factory=dict)

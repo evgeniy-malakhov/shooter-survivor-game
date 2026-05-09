@@ -262,5 +262,6 @@ class ExplosiveSystem(WorldSystem):
                     DamagePlayerEvent(
                         player_id=player.id,
                         damage=damage,
+                        attacker_id=owner_id,
                     )
                 )

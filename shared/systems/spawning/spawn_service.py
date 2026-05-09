@@ -4,6 +4,7 @@ import math
 import random
 
 from shared.constants import MAP_HEIGHT, MAP_WIDTH, SOLDIERS, ZOMBIES
+from shared.ai.squads import SquadState
 from shared.models import SoldierState, Vec2, ZombieState
 from shared.spawning.soldier_factory import SoldierFactory
 from shared.spawning.soldier_spawn_table import SOLDIER_SPAWN_POINTS
@@ -73,6 +74,7 @@ class SpawnService:
         kind: str,
         pos: Vec2,
         guard_point: Vec2 | None = None,
+        squad_id: str | None = None,
     ) -> SoldierState:
         soldier = self.soldier_factory.create(
             soldier_id=self._ids.next("s"),
@@ -80,9 +82,16 @@ class SpawnService:
             pos=pos,
             guard_point=guard_point or pos,
             rng=self._rng,
+            squad_id=squad_id,
         )
 
         self._state.soldiers[soldier.id] = soldier
+        resolved_squad_id = soldier.squad_id or f"{soldier.faction}:default"
+        squad = self._state.squads.setdefault(resolved_squad_id, SquadState(id=resolved_squad_id, faction=soldier.faction))
+        soldier.squad_id = resolved_squad_id
+        squad.member_ids.add(soldier.id)
+        if not squad.leader_id:
+            squad.leader_id = soldier.id
         return soldier
 
     def spawn_initial_soldiers(self) -> None:
@@ -108,6 +117,7 @@ class SpawnService:
                     kind=kind,
                     pos=pos,
                     guard_point=spawn_point.pos,
+                    squad_id=spawn_point.id,
                 )
 
     def random_soldier_spawn_pos(self, spawn_point) -> Vec2 | None:

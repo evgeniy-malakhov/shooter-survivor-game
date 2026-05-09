@@ -23,5 +23,12 @@ class OnlinePerfStats:
     server_interest_radius: float = 0.0
     minimap_radius: float = 0.0
     audio_radius: float = 0.0
+    snapshot_bytes: int = 0
+    delta_bytes: int = 0
+    events_bytes: int = 0
+    actors_full: int = 0
+    actors_simple: int = 0
+    actors_dot: int = 0
+    compression_ratio: float = 1.0
 
 

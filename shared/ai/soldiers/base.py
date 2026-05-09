@@ -28,6 +28,7 @@ class BaseSoldierAI:
         soldier = ctx.soldier
         soldier.attack_cooldown = max(0.0, soldier.attack_cooldown - ctx.dt)
         soldier.grenade_cooldown = max(0.0, soldier.grenade_cooldown - ctx.dt)
+        soldier.support_cooldown = max(0.0, soldier.support_cooldown - ctx.dt)
 
         if soldier.weapon.reload_left > 0.0:
             soldier.weapon.reload_left = max(0.0, soldier.weapon.reload_left - ctx.dt)
@@ -45,6 +46,12 @@ class BaseSoldierAI:
 
         if decision.kind == SoldierDecisionKind.RELOAD:
             self._start_reload(ctx)
+            return
+
+        if decision.kind == SoldierDecisionKind.HEAL_ALLY and decision.target:
+            soldier.mode = "support"
+            soldier.last_known_pos = decision.target.pos.copy()
+            self._try_heal(ctx, decision.target, result)
             return
 
         if decision.kind == SoldierDecisionKind.THROW_GRENADE and decision.target:
@@ -112,6 +119,14 @@ class BaseSoldierAI:
     ) -> None:
         return
 
+    def _try_heal(
+        self,
+        ctx: SoldierContext,
+        target: ActorTarget,
+        result: SoldierActionResult,
+    ) -> None:
+        return
+
     def _try_shoot(
         self,
         ctx: SoldierContext,
@@ -138,32 +153,37 @@ class BaseSoldierAI:
 
         soldier.facing = soldier.pos.angle_to(target.pos)
 
-        spread_max = max(0.01, (1.0 - ctx.spec.accuracy) * 0.18)
-        spread = ctx.rng.uniform(-spread_max, spread_max)
-        angle = soldier.facing + spread
+        shots = min(soldier.weapon.ammo_in_mag, self._shots_per_attack(ctx))
+        pellets = max(1, int(getattr(ctx.weapon, "pellets", 1)))
+        spread_max = self._spread_for_weapon(ctx)
 
-        start = Vec2(
-            soldier.pos.x + math.cos(angle) * (ctx.spec.radius + 10),
-            soldier.pos.y + math.sin(angle) * (ctx.spec.radius + 10),
-        )
+        for _ in range(shots):
+            for _pellet in range(pellets):
+                spread = ctx.rng.uniform(-spread_max, spread_max)
+                angle = soldier.facing + spread
 
-        velocity = Vec2(
-            math.cos(angle) * ctx.spec.projectile_speed,
-            math.sin(angle) * ctx.spec.projectile_speed,
-        )
+                start = Vec2(
+                    soldier.pos.x + math.cos(angle) * (ctx.spec.radius + 10),
+                    soldier.pos.y + math.sin(angle) * (ctx.spec.radius + 10),
+                )
 
-        result.projectiles.append(
-            {
-                "owner_id": soldier.id,
-                "pos": start,
-                "velocity": velocity,
-                "damage": ctx.spec.damage,
-                "life": ctx.projectile_life(ctx.spec.projectile_speed),
-                "radius": 4.5,
-                "floor": soldier.floor,
-                "weapon_key": ctx.spec.weapon_key,
-            }
-        )
+                velocity = Vec2(
+                    math.cos(angle) * ctx.spec.projectile_speed,
+                    math.sin(angle) * ctx.spec.projectile_speed,
+                )
+
+                result.projectiles.append(
+                    {
+                        "owner_id": soldier.id,
+                        "pos": start,
+                        "velocity": velocity,
+                        "damage": ctx.spec.damage,
+                        "life": ctx.projectile_life(ctx.spec.projectile_speed),
+                        "radius": getattr(ctx.weapon, "projectile_radius", 4.5),
+                        "floor": soldier.floor,
+                        "weapon_key": ctx.spec.weapon_key,
+                    }
+                )
 
         result.sounds.append(
             {
@@ -176,11 +196,21 @@ class BaseSoldierAI:
             }
         )
 
-        soldier.weapon.ammo_in_mag -= 1
+        soldier.weapon.ammo_in_mag -= shots
         soldier.attack_cooldown = ctx.spec.fire_cooldown
 
         if soldier.weapon.ammo_in_mag <= 0:
             self._start_reload(ctx)
+
+    def _shots_per_attack(self, ctx: SoldierContext) -> int:
+        if ctx.spec.weapon_key in {"rifle", "smg"}:
+            return 3
+        return 1
+
+    def _spread_for_weapon(self, ctx: SoldierContext) -> float:
+        weapon_spread = max(0.01, float(getattr(ctx.weapon, "spread", 0.04)))
+        skill_spread = max(0.01, (1.0 - ctx.spec.accuracy) * 0.18)
+        return max(weapon_spread, skill_spread)
 
     def _start_reload(self, ctx: SoldierContext) -> None:
         soldier = ctx.soldier

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from shared.ai.context import ActorTarget, SoundEvent, ZombieContext
 from shared.constants import PLAYER_RADIUS, SEARCH_DURATION, SPRINT_NOISE, ZOMBIES, SOLDIERS, MAP_WIDTH, MAP_HEIGHT
+from shared.factions import hostile
 from shared.models import (
     PlayerState,
     PoisonProjectileState,
@@ -80,6 +81,8 @@ class ZombieRuntimeService:
         ):
             if not player.alive:
                 continue
+            if not hostile(zombie.faction, player.faction):
+                continue
 
             targets.append(
                 ActorTarget(
@@ -89,9 +92,11 @@ class ZombieRuntimeService:
                     floor=player.floor,
                     alive=True,
                     radius=PLAYER_RADIUS,
+                    actor_kind="player",
                     health=player.health,
                     sprinting=player.sprinting,
                     inside_building=player.inside_building,
+                    faction=player.faction,
                 )
             )
 
@@ -101,6 +106,8 @@ class ZombieRuntimeService:
             zombie.floor,
         ):
             if not soldier.alive:
+                continue
+            if not hostile(zombie.faction, soldier.faction):
                 continue
 
             soldier_spec = SOLDIERS[soldier.kind]
@@ -113,9 +120,11 @@ class ZombieRuntimeService:
                     floor=soldier.floor,
                     alive=True,
                     radius=soldier_spec.radius,
+                    actor_kind=soldier.kind,
                     health=soldier.health,
                     sprinting=False,
                     inside_building=None,
+                    faction=soldier.faction,
                 )
             )
 

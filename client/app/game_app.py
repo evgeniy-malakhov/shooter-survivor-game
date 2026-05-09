@@ -286,6 +286,7 @@ class GameApp:
         self.settings = {
             "bot_vision": bool(saved_settings.get("bot_vision", True)),
             "bot_vision_range": bool(saved_settings.get("bot_vision_range", True)),
+            "soldier_reaction_radius": bool(saved_settings.get("soldier_reaction_radius", True)),
             "ai_reactions": bool(saved_settings.get("ai_reactions", True)),
             "health_bars": bool(saved_settings.get("health_bars", True)),
             "noise_radius": bool(saved_settings.get("noise_radius", True)),
@@ -569,6 +570,7 @@ class GameApp:
             state=self.state,
             fps=self.clock.get_fps(),
             quality_profile=self.graphics_quality,
+            online=self.online.online_perf() if self.state == "online_game" else None,
         )
 
     def toggle_gc_pacing(self) -> None:
@@ -610,16 +612,14 @@ class GameApp:
         view = self.camera_controller.visible_world_rect(camera, margin=360.0)
         cache_key = self._render_frame_cache_key_for(snapshot_tick, camera, player)
         if (
-            self.state == "online_game"
+            self.state != "online_game"
             and self._render_frame_cache_key == cache_key
             and self._render_frame_cache is not None
-            and self.online.online_perf().pending_inputs == 0
         ):
             return self._render_frame_cache
         frame = self.render_frame_builder.build(snapshot, view, player, self.perf_stats)
-        if self.state == "online_game":
-            self._render_frame_cache_key = cache_key
-            self._render_frame_cache = frame
+        self._render_frame_cache_key = cache_key
+        self._render_frame_cache = frame
         return frame
 
     def _snapshot_tick(self, snapshot: WorldSnapshot | None) -> int:
@@ -639,6 +639,7 @@ class GameApp:
             camera_cell_y=int(camera.y // 512),
             floor=player.floor if player else 0,
             zoom_bucket=int(round(self.camera_zoom * 100.0)),
+            local_facing_bucket=int(((player.angle if player else 0.0) % math.tau) / math.tau * 96),
         )
 
     def _sync_display_refs(self) -> None:
@@ -1395,6 +1396,7 @@ class GameApp:
                     f"Net interval:{online.snapshot_interval_ms:5.1f}ms ping:{online.ping_ms:5.1f}ms ack:{online.ack_input_seq}",
                     f"Pending inputs:{online.pending_inputs} commands:{online.pending_commands}",
                     f"Decode:{online.decode_ms:5.2f} Interp:{online.interpolation_ms:5.2f} Predict:{online.prediction_ms:5.2f}",
+                    f"Payload snapshot/delta/events:{online.snapshot_bytes}/{online.delta_bytes}/{online.events_bytes}B LOD full/simple/dot:{online.actors_full}/{online.actors_simple}/{online.actors_dot} ratio:{online.compression_ratio:.2f}",
                     f"Prediction error:{online.prediction_error_px:5.1f}px correction:{online.correction_px:5.1f}px",
                     f"Radius server:{online.server_interest_radius:5.0f} render:{online.render_radius:5.0f} minimap:{online.minimap_radius:5.0f} audio:{online.audio_radius:5.0f}",
                 ]

@@ -40,3 +40,14 @@ class GrenadierTuning:
     cooldown_max: float = 6.8
     throw_speed_multiplier: float = 1.9
     minimum_target_cluster_bonus: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class MedicTuning:
+    heal_amount: int = 18
+    self_heal_amount: int = 14
+    heal_range: float = 92.0
+    move_to_heal_range: float = 520.0
+    cooldown: float = 1.15
+    critical_health_ratio: float = 0.42
+    wounded_health_ratio: float = 0.72

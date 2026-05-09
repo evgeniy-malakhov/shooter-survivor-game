@@ -85,6 +85,9 @@ def analyze(path: Path) -> str:
             f"online spikes >4ms: {len(heavy_online)}",
             f"GC spikes >1ms: {len(gc_spikes)}",
             f"quality changes: {quality_changes}",
+            f"payload avg snapshot/delta/events: {avg(rows, 'snapshot_bytes'):.0f}/{avg(rows, 'delta_bytes'):.0f}/{avg(rows, 'events_bytes'):.0f} bytes",
+            f"LOD avg full/simple/dot: {avg(rows, 'actors_full'):.1f}/{avg(rows, 'actors_simple'):.1f}/{avg(rows, 'actors_dot'):.1f}",
+            f"compression ratio avg: {avg(rows, 'compression_ratio'):.2f}",
         ]
     )
 

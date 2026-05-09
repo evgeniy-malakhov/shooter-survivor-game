@@ -12,6 +12,7 @@ class ActorDecisionOutput:
     actor_state: dict[str, Any] | None = None
     player_hits: list[tuple[str, int]] = field(default_factory=list)
     soldier_hits: list[tuple[str, int]] = field(default_factory=list)
+    soldier_heals: list[tuple[str, int]] = field(default_factory=list)
     projectiles: list[dict[str, Any]] = field(default_factory=list)
     grenades: list[dict[str, Any]] = field(default_factory=list)
     sounds: list[dict[str, Any]] = field(default_factory=list)

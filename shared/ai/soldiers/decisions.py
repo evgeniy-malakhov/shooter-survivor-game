@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from shared.ai.context import ActorTarget
+from shared.ai.memory import memory_pos, most_dangerous_sound
 from shared.models import Vec2
 from shared.ai.soldiers.configs.schema import SoldierDecisionWeights, SoldierHearingTuning
 from shared.ai.soldiers.context import SoldierContext
@@ -18,6 +19,7 @@ class SoldierDecisionKind(str, Enum):
     INVESTIGATE = "investigate"
     INVESTIGATE_SOUND = "investigate_sound"
     THROW_GRENADE = "throw_grenade"
+    HEAL_ALLY = "heal_ally"
 
 
 @dataclass(slots=True)
@@ -87,7 +89,7 @@ class SoldierDecisionScorer:
             decisions.append(
                 SoldierDecision(
                     kind=SoldierDecisionKind.INVESTIGATE,
-                    score=self.weights.investigate_last_known + ctx.soldier.alertness * 18.0,
+                    score=self.weights.investigate_last_known + 36.0 + ctx.soldier.alertness * 24.0,
                     pos=ctx.soldier.last_known_pos.copy(),
                 )
             )
@@ -107,9 +109,6 @@ class SoldierDecisionScorer:
                 continue
 
             if target.kind not in {"zombie", "player"}:
-                continue
-
-            if target.kind == "player" and target.inside_building:
                 continue
 
             dist = ctx.soldier.pos.distance_to(target.pos)
@@ -136,7 +135,15 @@ class SoldierDecisionScorer:
     def _score_sound(self, ctx: SoldierContext) -> SoldierDecision | None:
         sound = ctx.can_hear(ctx.soldier)
         if not sound:
-            return None
+            memory = most_dangerous_sound(ctx.soldier.ai_memory, now=ctx.time, floor=ctx.soldier.floor)
+            pos = memory_pos(memory) if memory else None
+            if not pos or ctx.soldier.mode == "investigate":
+                return None
+            return SoldierDecision(
+                kind=SoldierDecisionKind.INVESTIGATE_SOUND,
+                score=self.weights.sound_interest + float(memory.get("danger", 0.0)) * 38.0,
+                pos=pos,
+            )
 
         distance = ctx.soldier.pos.distance_to(sound.pos)
         score = self.weights.sound_interest
@@ -152,6 +159,8 @@ class SoldierDecisionScorer:
 
         if ctx.soldier.mode == "investigate":
             score += self.hearing_tuning.already_investigating_penalty
+            if ctx.soldier.last_known_pos:
+                score -= 38.0
 
         if score < self.hearing_tuning.min_reaction_score:
             return None

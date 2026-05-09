@@ -6,6 +6,7 @@ import random
 from shared.ai.context import SoundEvent
 from shared.ai.soldiers.context import SoldierContext
 from shared.ai.soldiers.configs.heavy_grenadier import HEAVY_GRENADIER_HEARING
+from shared.ai.soldiers.configs.medic import MEDIC_HEARING
 from shared.ai.soldiers.configs.rifleman import RIFLEMAN_HEARING
 from shared.ai.soldiers.configs.schema import SoldierHearingTuning
 from shared.constants import MAP_HEIGHT, MAP_WIDTH, SOLDIERS, WEAPONS
@@ -45,6 +46,7 @@ class SoldierDecisionPolicy:
             spec=spec,
             weapon=weapon,
             sounds=decision_input.nearby_sounds,
+            squad_mates=decision_input.nearby_soldiers,
             line_blocked=lambda start, end, floor: ctx.geometry.line_blocked(start, end, floor),
             can_hear=lambda actor: self._can_hear(actor, decision_input, ctx),
             move_toward=lambda actor, target, delta_time, local_rng=None: self._move_toward(
@@ -71,6 +73,7 @@ class SoldierDecisionPolicy:
             projectiles=list(result.projectiles),
             grenades=list(result.grenades),
             sounds=list(result.sounds),
+            soldier_heals=list(result.soldier_heals),
         )
 
     def _can_hear(
@@ -103,6 +106,8 @@ class SoldierDecisionPolicy:
     def _hearing_tuning(self, kind: str) -> SoldierHearingTuning:
         if kind == "heavy_grenadier":
             return SoldierHearingTuning(**HEAVY_GRENADIER_HEARING)
+        if kind == "medic":
+            return SoldierHearingTuning(**MEDIC_HEARING)
         return SoldierHearingTuning(**RIFLEMAN_HEARING)
 
     def _move_toward(
@@ -120,6 +125,7 @@ class SoldierDecisionPolicy:
 
         soldier.facing = math.atan2(direction.y, direction.x)
         step = direction.normalized().scaled(spec.speed * dt)
+        old_pos = soldier.pos.copy()
 
         ctx.movement.move_circle(
             soldier.pos,
@@ -127,6 +133,13 @@ class SoldierDecisionPolicy:
             spec.radius,
             soldier.floor,
         )
+        if soldier.pos.distance_to(old_pos) < 0.5:
+            door = ctx.buildings.nearest_door(soldier.pos, 140.0, soldier.floor)
+            if door and not door.open:
+                door.open = True
+                ctx.geometry.mark_dirty()
+                soldier.waypoint = door.rect.center
+                return
         soldier.pos.clamp_to_map(MAP_WIDTH, MAP_HEIGHT)
 
     def _random_guard_pos(

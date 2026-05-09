@@ -29,7 +29,7 @@ class PerfLogRecorder:
     def path(self) -> Path | None:
         return self._path
 
-    def observe(self, stats: ClientPerfStats, *, state: str, fps: float, quality_profile: str) -> None:
+    def observe(self, stats: ClientPerfStats, *, state: str, fps: float, quality_profile: str, online: object | None = None) -> None:
         if not self.enabled:
             return
         now = time.time()
@@ -59,5 +59,17 @@ class PerfLogRecorder:
             "quality_lod": stats.quality_actor_lod_bias,
             "quality_effects": stats.quality_effects_quality,
         }
+        if online is not None:
+            row.update(
+                {
+                    "snapshot_bytes": int(getattr(online, "snapshot_bytes", 0)),
+                    "delta_bytes": int(getattr(online, "delta_bytes", 0)),
+                    "events_bytes": int(getattr(online, "events_bytes", 0)),
+                    "actors_full": int(getattr(online, "actors_full", 0)),
+                    "actors_simple": int(getattr(online, "actors_simple", 0)),
+                    "actors_dot": int(getattr(online, "actors_dot", 0)),
+                    "compression_ratio": float(getattr(online, "compression_ratio", 1.0)),
+                }
+            )
         with self._path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")

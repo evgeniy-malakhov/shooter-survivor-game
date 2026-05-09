@@ -12,6 +12,7 @@ class SoldierRuntimeSystem(WorldSystem):
         for soldier in soldiers:
             if not soldier.alive:
                 state.soldiers.pop(soldier.id, None)
+        ctx.squads.rebuild()
 
         inputs = ctx.actor_snapshots.build_soldier_inputs(
             list(state.soldiers.values()),

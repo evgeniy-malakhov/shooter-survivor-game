@@ -4,6 +4,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Callable, Any
 
+from shared.factions import FACTION_NEUTRAL
 from shared.models import PlayerState, Vec2, ZombieState
 
 
@@ -51,6 +52,8 @@ class ActorTarget:
     floor: int
     alive: bool
     radius: float
+    actor_kind: str = ""
     health: int = 1
     sprinting: bool = False
     inside_building: str | None = None
+    faction: str = FACTION_NEUTRAL

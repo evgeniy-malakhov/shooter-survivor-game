@@ -1,8 +1,8 @@
 RUNNER_SOUND_REACTION = {
     "min_reaction_score": 32.0,
     "instant_reaction_score": 76.0,
-    "reaction_delay_min": 0.05,
-    "reaction_delay_max": 0.22,
+    "reaction_delay_min": 0.12,
+    "reaction_delay_max": 0.30,
 }
 
 RUNNER_DECISION_WEIGHTS = {

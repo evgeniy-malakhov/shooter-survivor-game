@@ -10,5 +10,6 @@ class RenderFrameCacheKey:
     camera_cell_y: int
     floor: int
     zoom_bucket: int
+    local_facing_bucket: int
 
 

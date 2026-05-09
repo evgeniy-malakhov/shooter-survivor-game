@@ -8,6 +8,7 @@ SNAPSHOT_SCHEMA = "compact-v1"
 _COLLECTION_TO_WIRE = {
     "players": "p",
     "zombies": "z",
+    "soldiers": "so",
     "projectiles": "s",
     "grenades": "g",
     "mines": "m",
@@ -17,6 +18,10 @@ _COLLECTION_TO_WIRE = {
     "buildings": "b",
 }
 _WIRE_TO_COLLECTION = {wire: collection for collection, wire in _COLLECTION_TO_WIRE.items()}
+_LOD_COLLECTION_WIRES = {
+    "zombies": ("zs", "zd", "zombie"),
+    "soldiers": ("sos", "sod", "soldier"),
+}
 
 
 def compact_snapshot(snapshot: dict[str, Any], local_player_id: str | None) -> dict[str, Any]:
@@ -28,7 +33,12 @@ def compact_snapshot(snapshot: dict[str, Any], local_player_id: str | None) -> d
         "mw": snapshot.get("map_width", 1),
         "mh": snapshot.get("map_height", 1),
         "p": [_pack_player(entity) for entity_id, entity in players.items() if entity_id != local_player_id],
-        "z": [_pack_zombie(entity) for entity in _collection(snapshot, "zombies").values()],
+        "z": [_pack_zombie(entity) for entity in _collection(snapshot, "zombies").values() if entity.get("_lod", "full") == "full"],
+        "zs": [_pack_actor_simple(entity) for entity in _collection(snapshot, "zombies").values() if entity.get("_lod") == "simple"],
+        "zd": [_pack_actor_dot(entity, "zombie") for entity in _collection(snapshot, "zombies").values() if entity.get("_lod") == "dot"],
+        "so": [_pack_soldier(entity) for entity in _collection(snapshot, "soldiers").values() if entity.get("_lod", "full") == "full"],
+        "sos": [_pack_actor_simple(entity) for entity in _collection(snapshot, "soldiers").values() if entity.get("_lod") == "simple"],
+        "sod": [_pack_actor_dot(entity, "soldier") for entity in _collection(snapshot, "soldiers").values() if entity.get("_lod") == "dot"],
         "s": [_pack_projectile(entity) for entity in _collection(snapshot, "projectiles").values()],
         "g": [_pack_grenade(entity) for entity in _collection(snapshot, "grenades").values()],
         "m": [_pack_mine(entity) for entity in _collection(snapshot, "mines").values()],
@@ -57,7 +67,16 @@ def expand_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
         "map_width": int(payload.get("mw", 1)),
         "map_height": int(payload.get("mh", 1)),
         "players": players,
-        "zombies": _unpack_rows(payload.get("z", []), _unpack_zombie),
+        "zombies": {
+            **_unpack_rows(payload.get("z", []), _unpack_zombie),
+            **_unpack_rows(payload.get("zs", []), _unpack_actor_simple_zombie),
+            **_unpack_rows(payload.get("zd", []), _unpack_actor_dot_zombie),
+        },
+        "soldiers": {
+            **_unpack_rows(payload.get("so", []), _unpack_soldier),
+            **_unpack_rows(payload.get("sos", []), _unpack_actor_simple_soldier),
+            **_unpack_rows(payload.get("sod", []), _unpack_actor_dot_soldier),
+        },
         "projectiles": _unpack_rows(payload.get("s", []), _unpack_projectile),
         "grenades": _unpack_rows(payload.get("g", []), _unpack_grenade),
         "mines": _unpack_rows(payload.get("m", []), _unpack_mine),
@@ -106,6 +125,24 @@ def compact_delta(
                 compact_patch["f"] = full_players
         elif collection == "buildings":
             compact_patch = {"u": upserts, "r": removals}
+        elif collection in _LOD_COLLECTION_WIRES:
+            simple_wire_key, dot_wire_key, faction = _LOD_COLLECTION_WIRES[collection]
+            full_rows: list[list[Any]] = []
+            simple_rows: list[list[Any]] = []
+            dot_rows: list[list[Any]] = []
+            for entity in upserts.values():
+                lod = entity.get("_lod", "full")
+                if lod == "simple":
+                    simple_rows.append(_pack_actor_simple(entity))
+                elif lod == "dot":
+                    dot_rows.append(_pack_actor_dot(entity, faction))
+                else:
+                    full_rows.append(_pack_entity(collection, entity))
+            compact_patch = {"u": full_rows, "r": removals}
+            if simple_rows:
+                compact[simple_wire_key] = {"u": simple_rows, "r": []}
+            if dot_rows:
+                compact[dot_wire_key] = {"u": dot_rows, "r": []}
         else:
             compact_patch = {"u": [_pack_entity(collection, entity) for entity in upserts.values()], "r": removals}
         if compact_patch.get("u") or compact_patch.get("f") or compact_patch.get("r"):
@@ -141,12 +178,29 @@ def expand_delta(payload: dict[str, Any]) -> dict[str, Any]:
                 entity = _unpack_entity(collection, row)
                 upserts[entity["id"]] = entity
         delta[collection] = {"u": upserts, "r": list(patch.get("r", []))}
+    for wire_key, collection, unpacker in (
+        ("zs", "zombies", _unpack_actor_simple_zombie),
+        ("zd", "zombies", _unpack_actor_dot_zombie),
+        ("sos", "soldiers", _unpack_actor_simple_soldier),
+        ("sod", "soldiers", _unpack_actor_dot_soldier),
+    ):
+        patch = payload.get(wire_key)
+        if not isinstance(patch, dict):
+            continue
+        collection_patch = delta.setdefault(collection, {"u": {}, "r": []})
+        upserts = collection_patch.setdefault("u", {})
+        for row in patch.get("u", []):
+            entity = unpacker(row)
+            upserts[entity["id"]] = entity
+        collection_patch.setdefault("r", []).extend(list(patch.get("r", [])))
     return delta
 
 
 def _pack_entity(collection: str, entity: dict[str, Any]) -> list[Any]:
     if collection == "zombies":
         return _pack_zombie(entity)
+    if collection == "soldiers":
+        return _pack_soldier(entity)
     if collection == "projectiles":
         return _pack_projectile(entity)
     if collection == "grenades":
@@ -165,6 +219,8 @@ def _pack_entity(collection: str, entity: dict[str, Any]) -> list[Any]:
 def _unpack_entity(collection: str, row: list[Any]) -> dict[str, Any]:
     if collection == "zombies":
         return _unpack_zombie(row)
+    if collection == "soldiers":
+        return _unpack_soldier(row)
     if collection == "projectiles":
         return _unpack_projectile(row)
     if collection == "grenades":
@@ -204,6 +260,7 @@ def _pack_player(entity: dict[str, Any]) -> list[Any]:
         _active_weapon_payload(entity),
         int(entity.get("ping_ms", 0)),
         entity.get("connection_quality", "stable"),
+        entity.get("faction", "survivors"),
     ]
 
 
@@ -232,6 +289,7 @@ def _unpack_player(row: list[Any]) -> dict[str, Any]:
         "weapons": weapons,
         "ping_ms": int(_get(row, 19, 0)),
         "connection_quality": str(_get(row, 20, "stable")),
+        "faction": str(_get(row, 21, "survivors")),
     }
 
 
@@ -249,6 +307,7 @@ def _pack_zombie(entity: dict[str, Any]) -> list[Any]:
         int(entity.get("floor", 0)),
         entity.get("target_player_id"),
         _q(entity.get("alertness"), 1000),
+        entity.get("faction", "infected"),
     ]
 
 
@@ -264,6 +323,138 @@ def _unpack_zombie(row: list[Any]) -> dict[str, Any]:
         "floor": int(_get(row, 8, 0)),
         "target_player_id": _get(row, 9, None),
         "alertness": _uq(_get(row, 10, 0), 1000),
+        "faction": str(_get(row, 11, "infected")),
+    }
+
+
+def _pack_soldier(entity: dict[str, Any]) -> list[Any]:
+    pos = _pos(entity)
+    weapon = entity.get("weapon", {}) if isinstance(entity.get("weapon"), dict) else {}
+    return [
+        entity.get("id", ""),
+        entity.get("kind", "rifleman"),
+        _q(pos.get("x")),
+        _q(pos.get("y")),
+        int(entity.get("health", 1)),
+        int(entity.get("armor", 0)),
+        weapon,
+        int(entity.get("floor", 0)),
+        _q(entity.get("facing"), 1000),
+        1 if entity.get("alive", True) else 0,
+        entity.get("mode", "guard"),
+        entity.get("target_id"),
+        _q(entity.get("alertness"), 1000),
+        entity.get("faction", "military"),
+    ]
+
+
+def _unpack_soldier(row: list[Any]) -> dict[str, Any]:
+    return {
+        "id": str(_get(row, 0, "")),
+        "kind": str(_get(row, 1, "rifleman")),
+        "pos": {"x": _uq(_get(row, 2, 0)), "y": _uq(_get(row, 3, 0))},
+        "health": int(_get(row, 4, 1)),
+        "armor": int(_get(row, 5, 0)),
+        "weapon": _get(row, 6, {"key": "rifle", "ammo_in_mag": 30, "reserve_ammo": 90}),
+        "floor": int(_get(row, 7, 0)),
+        "facing": _uq(_get(row, 8, 0), 1000),
+        "alive": bool(_get(row, 9, 1)),
+        "mode": str(_get(row, 10, "guard")),
+        "target_id": _get(row, 11, None),
+        "alertness": _uq(_get(row, 12, 0), 1000),
+        "faction": str(_get(row, 13, "military")),
+    }
+
+
+def _pack_actor_simple(entity: dict[str, Any]) -> list[Any]:
+    pos = _pos(entity)
+    return [
+        entity.get("id", ""),
+        entity.get("kind", "walker"),
+        _q(pos.get("x")),
+        _q(pos.get("y")),
+        _q(entity.get("hp_ratio", 1.0), 1000),
+        _q(entity.get("facing"), 1000),
+        int(entity.get("floor", 0)),
+        entity.get("faction", ""),
+    ]
+
+
+def _pack_actor_dot(entity: dict[str, Any], faction: str) -> list[Any]:
+    pos = _pos(entity)
+    return [
+        entity.get("id", ""),
+        entity.get("kind", "walker"),
+        _q(pos.get("x")),
+        _q(pos.get("y")),
+        int(entity.get("floor", 0)),
+        entity.get("faction", faction),
+    ]
+
+
+def _unpack_actor_simple_zombie(row: list[Any]) -> dict[str, Any]:
+    hp_ratio = max(0.0, min(1.0, _uq(_get(row, 4, 1000), 1000)))
+    return {
+        "id": str(_get(row, 0, "")),
+        "kind": str(_get(row, 1, "walker")),
+        "pos": {"x": _uq(_get(row, 2, 0)), "y": _uq(_get(row, 3, 0))},
+        "health": max(1, int(hp_ratio * 100)),
+        "armor": 0,
+        "_lod": "simple",
+        "mode": "lod_simple",
+        "facing": _uq(_get(row, 5, 0), 1000),
+        "floor": int(_get(row, 6, 0)),
+        "faction": str(_get(row, 7, "infected") or "infected"),
+    }
+
+
+def _unpack_actor_dot_zombie(row: list[Any]) -> dict[str, Any]:
+    return {
+        "id": str(_get(row, 0, "")),
+        "kind": str(_get(row, 1, "walker")),
+        "pos": {"x": _uq(_get(row, 2, 0)), "y": _uq(_get(row, 3, 0))},
+        "health": 1,
+        "armor": 0,
+        "_lod": "dot",
+        "mode": "lod_dot",
+        "facing": 0.0,
+        "floor": int(_get(row, 4, 0)),
+        "faction": str(_get(row, 5, "infected")),
+    }
+
+
+def _unpack_actor_simple_soldier(row: list[Any]) -> dict[str, Any]:
+    hp_ratio = max(0.0, min(1.0, _uq(_get(row, 4, 1000), 1000)))
+    return {
+        "id": str(_get(row, 0, "")),
+        "kind": str(_get(row, 1, "rifleman")),
+        "pos": {"x": _uq(_get(row, 2, 0)), "y": _uq(_get(row, 3, 0))},
+        "health": max(1, int(hp_ratio * 100)),
+        "armor": 0,
+        "_lod": "simple",
+        "weapon": {"key": "rifle", "ammo_in_mag": 0, "reserve_ammo": 0},
+        "floor": int(_get(row, 6, 0)),
+        "faction": str(_get(row, 7, "military") or "military"),
+        "facing": _uq(_get(row, 5, 0), 1000),
+        "alive": True,
+        "mode": "lod_simple",
+    }
+
+
+def _unpack_actor_dot_soldier(row: list[Any]) -> dict[str, Any]:
+    return {
+        "id": str(_get(row, 0, "")),
+        "kind": str(_get(row, 1, "rifleman")),
+        "pos": {"x": _uq(_get(row, 2, 0)), "y": _uq(_get(row, 3, 0))},
+        "health": 1,
+        "armor": 0,
+        "_lod": "dot",
+        "weapon": {"key": "rifle", "ammo_in_mag": 0, "reserve_ammo": 0},
+        "floor": int(_get(row, 4, 0)),
+        "faction": str(_get(row, 5, "military")),
+        "facing": 0.0,
+        "alive": True,
+        "mode": "lod_dot",
     }
 
 

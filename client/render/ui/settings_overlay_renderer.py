@@ -71,6 +71,7 @@ class SettingsOverlayRenderer:
         labels = {
             "bot_vision": ctx.text.tr("settings.bot_vision"),
             "bot_vision_range": ctx.text.tr("settings.bot_vision_range"),
+            "soldier_reaction_radius": ctx.text.tr("settings.soldier_reaction_radius"),
             "ai_reactions": ctx.text.tr("settings.ai_reactions"),
             "health_bars": ctx.text.tr("settings.health_bars"),
             "noise_radius": ctx.text.tr("settings.noise_radius"),

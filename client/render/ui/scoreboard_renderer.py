@@ -31,7 +31,8 @@ class ScoreboardRenderer:
         overlay = pygame.Surface(ctx.screen.get_size(), pygame.SRCALPHA)
         overlay.fill((4, 7, 18, 206))
         ctx.screen.blit(overlay, (0, 0))
-        panel = pygame.Rect((ctx.screen.get_width() - 980) // 2, 96, 980, 520)
+        panel_w = min(1120, ctx.screen.get_width() - 64)
+        panel = pygame.Rect((ctx.screen.get_width() - panel_w) // 2, 96, panel_w, 520)
         glow = pygame.Surface(panel.inflate(26, 26).size, pygame.SRCALPHA)
         pygame.draw.rect(glow, (76, 225, 255, 34), glow.get_rect(), border_radius=16)
         pygame.draw.rect(glow, (255, 91, 111, 24), glow.get_rect().inflate(-10, -10), 2, border_radius=14)
@@ -48,12 +49,22 @@ class ScoreboardRenderer:
             ctx.text.tr("scoreboard.runner"),
             ctx.text.tr("scoreboard.brute"),
             ctx.text.tr("scoreboard.leaper"),
+            ctx.text.tr("scoreboard.soldiers"),
+            ctx.text.tr("scoreboard.players"),
             ctx.text.tr("scoreboard.ping"),
             ctx.text.tr("scoreboard.status"),
         ]
-        xs = [panel.x + 42, panel.x + 286, panel.x + 350, panel.x + 426, panel.x + 506, panel.x + 586, panel.x + 666, panel.x + 746, panel.x + 832]
-        for x, header in zip(xs, headers):
-            draw_text(ctx, header, x, panel.y + 112, palette.CYAN if header == ctx.text.tr("scoreboard.total") else palette.MUTED, ctx.fonts.small)
+        xs = [panel.x + int(panel.w * ratio) for ratio in (0.04, 0.25, 0.31, 0.37, 0.435, 0.50, 0.565, 0.63, 0.705, 0.775, 0.855)]
+        widths = [max(36, xs[index + 1] - x - 8) for index, x in enumerate(xs[:-1])]
+        widths.append(max(48, panel.right - xs[-1] - 34))
+        for index, (x, header) in enumerate(zip(xs, headers)):
+            draw_text_fit(
+                ctx,
+                header,
+                pygame.Rect(x, panel.y + 112, widths[index], 20),
+                palette.CYAN if header == ctx.text.tr("scoreboard.total") else palette.MUTED,
+                ctx.fonts.small,
+            )
         viewport = pygame.Rect(panel.x + 22, panel.y + 146, panel.w - 44, panel.h - 176)
         previous_clip = ctx.screen.get_clip()
         ctx.screen.set_clip(viewport)
@@ -82,6 +93,8 @@ class ScoreboardRenderer:
                 str(player.kills_by_kind.get("runner", 0)),
                 str(player.kills_by_kind.get("brute", 0)),
                 str(player.kills_by_kind.get("leaper", 0)),
+                str(player.kills_by_kind.get("soldier", 0)),
+                str(player.kills_by_kind.get("player", 0)),
                 self.format_ping(player.ping_ms),
                 ctx.text.tr("state.alive") if player.alive else ctx.text.tr("state.dead"),
             ]
@@ -105,7 +118,7 @@ class ScoreboardRenderer:
                     pygame.draw.rect(ctx.screen, palette.PURPLE if player.floor < 0 else palette.CYAN, badge, 1, border_radius=7)
                     draw_text_fit(ctx, value, badge.inflate(-6, -3), palette.TEXT, ctx.fonts.small, center=True)
                 else:
-                    draw_text_fit(ctx, value, pygame.Rect(x, y, 66, 22), palette.YELLOW if index == 2 else palette.TEXT, ctx.fonts.normal)
+                    draw_text_fit(ctx, value, pygame.Rect(x, y, widths[index], 22), palette.YELLOW if index == 2 else palette.TEXT, ctx.fonts.normal)
             y += 52
         ctx.screen.set_clip(previous_clip)
         self.paint_scrollbar(ctx, snapshot, viewport)

@@ -16,6 +16,7 @@ class SoldierFactory:
         pos: Vec2,
         guard_point: Vec2,
         rng: random.Random,
+        squad_id: str | None = None,
     ) -> SoldierState:
         spec = SOLDIERS[kind]
         weapon_spec = WEAPONS[spec.weapon_key]
@@ -34,4 +35,5 @@ class SoldierFactory:
             facing=rng.uniform(-math.pi, math.pi),
             guard_point=guard_point.copy(),
             weapon=weapon,
+            squad_id=squad_id,
         )

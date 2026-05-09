@@ -6,6 +6,7 @@ from typing import Any
 ENTITY_COLLECTIONS = (
     "players",
     "zombies",
+    "soldiers",
     "projectiles",
     "grenades",
     "mines",

@@ -18,6 +18,7 @@ from shared.maps.loading.loading_screen_state import LoadingScreenState
 from shared.maps.loading.loading_stage import LoadingStage
 from shared.systems.actors.soldier_runtime_service import SoldierRuntimeService
 from shared.systems.actors.soldier_runtime_system import SoldierRuntimeSystem
+from shared.systems.actors.squad_service import SquadService
 from shared.systems.actors.zombie_runtime_service import ZombieRuntimeService
 from shared.systems.actors.zombie_runtime_system import ZombieRuntimeSystem
 from shared.systems.actors.decision import (
@@ -177,6 +178,7 @@ def build_world_composition(
         rng=rng,
         soldier_ai_registry=SOLDIER_AI_REGISTRY,
     )
+    squad_service = SquadService(state=state)
 
     zombie_pathfinder = GridPathfinder(cell_size=96)
 
@@ -257,6 +259,7 @@ def build_world_composition(
         interactions=interaction_service,
         soldier_runtime=soldier_runtime_service,
         zombie_runtime=zombie_runtime_service,
+        squads=squad_service,
         actor_snapshots=actor_snapshot_builder,
         actor_decisions=actor_decision_executor,
         spatial=spatial_service,

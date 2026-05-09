@@ -7,10 +7,12 @@ from typing import TYPE_CHECKING
 
 from shared.ai.context import ActorTarget, SoundEvent
 from shared.ai.soldiers.configs.heavy_grenadier import HEAVY_GRENADIER_HEARING
+from shared.ai.soldiers.configs.medic import MEDIC_HEARING
 from shared.ai.soldiers.configs.rifleman import RIFLEMAN_HEARING
 from shared.ai.soldiers.configs.schema import SoldierHearingTuning
 from shared.ai.soldiers.context import SoldierContext
 from shared.constants import MAP_HEIGHT, MAP_WIDTH, PLAYER_RADIUS, SOLDIERS, ZOMBIES, WEAPONS
+from shared.factions import hostile
 from shared.models import PlayerState, ProjectileState, SoldierState, Vec2
 from shared.world.world_state import WorldState
 from shared.systems.events.game_events import EmitSoundEvent
@@ -52,6 +54,7 @@ class SoldierRuntimeService:
         return SoldierContext(
             soldier=soldier,
             targets=self.targets_near_soldier(soldier, ctx),
+            squad_mates=ctx.squads.mates_for(soldier),
             dt=dt,
             time=self._state.time,
             rng=self._rng,
@@ -123,6 +126,15 @@ class SoldierRuntimeService:
                 )
             )
 
+        self.apply_heals(result.soldier_heals)
+
+    def apply_heals(self, heals: list[tuple[str, int]]) -> None:
+        for soldier_id, amount in heals:
+            soldier = self._state.soldiers.get(soldier_id)
+            if not soldier or not soldier.alive:
+                continue
+            soldier.health = min(SOLDIERS[soldier.kind].health, soldier.health + max(1, int(amount)))
+
     def apply_decision_output(self, output: ActorDecisionOutput, ctx: "WorldContext") -> None:
         soldier = self._state.soldiers.get(output.actor_id)
 
@@ -154,6 +166,8 @@ class SoldierRuntimeService:
         ):
             if zombie.health <= 0:
                 continue
+            if not hostile(soldier.faction, zombie.faction):
+                continue
 
             zombie_spec = ZOMBIES[zombie.kind]
 
@@ -165,8 +179,10 @@ class SoldierRuntimeService:
                     floor=zombie.floor,
                     alive=True,
                     radius=zombie_spec.radius,
+                    actor_kind=zombie.kind,
                     health=zombie.health,
                     inside_building=zombie.inside_building,
+                    faction=zombie.faction,
                 )
             )
 
@@ -177,6 +193,8 @@ class SoldierRuntimeService:
         ):
             if not player.alive:
                 continue
+            if not hostile(soldier.faction, player.faction):
+                continue
 
             targets.append(
                 ActorTarget(
@@ -186,9 +204,11 @@ class SoldierRuntimeService:
                     floor=player.floor,
                     alive=True,
                     radius=PLAYER_RADIUS,
+                    actor_kind="player",
                     health=player.health,
                     sprinting=player.sprinting,
                     inside_building=player.inside_building,
+                    faction=player.faction,
                 )
             )
 
@@ -230,6 +250,8 @@ class SoldierRuntimeService:
     def soldier_hearing_tuning(self, kind: str) -> SoldierHearingTuning:
         if kind == "heavy_grenadier":
             return SoldierHearingTuning(**HEAVY_GRENADIER_HEARING)
+        if kind == "medic":
+            return SoldierHearingTuning(**MEDIC_HEARING)
         return SoldierHearingTuning(**RIFLEMAN_HEARING)
 
     def move_toward(
@@ -252,6 +274,7 @@ class SoldierRuntimeService:
         soldier.facing = math.atan2(direction.y, direction.x)
 
         step = direction.normalized().scaled(spec.speed * dt)
+        old_pos = soldier.pos.copy()
 
         ctx.movement.move_circle(
             soldier.pos,
@@ -259,6 +282,14 @@ class SoldierRuntimeService:
             spec.radius,
             soldier.floor,
         )
+
+        if soldier.pos.distance_to(old_pos) < 0.5:
+            door = ctx.buildings.nearest_door(soldier.pos, 140.0, soldier.floor)
+            if door and not door.open:
+                door.open = True
+                ctx.geometry.mark_dirty()
+                soldier.waypoint = door.rect.center
+                return
 
         soldier.pos.clamp_to_map(MAP_WIDTH, MAP_HEIGHT)
 

@@ -7,9 +7,11 @@ import pygame
 
 from client.render.render_frame import RenderLOD
 
+FULL_FACING_BUCKETS = 64
+
 
 class ActorSpriteCache:
-    def __init__(self, max_entries: int = 512) -> None:
+    def __init__(self, max_entries: int = 2048) -> None:
         self.max_entries = max_entries
         self._cache: OrderedDict[tuple[object, ...], pygame.Surface] = OrderedDict()
         self.hits = 0
@@ -26,7 +28,7 @@ class ActorSpriteCache:
         facing: float,
         is_local: bool = False,
     ) -> pygame.Surface:
-        facing_bucket = int((facing % math.tau) / math.tau * 16) if lod == RenderLOD.FULL else 0
+        facing_bucket = int((facing % math.tau) / math.tau * FULL_FACING_BUCKETS) if lod == RenderLOD.FULL else 0
         key = (actor_type, kind, lod.value, max(2, radius), color, facing_bucket, is_local)
         cached = self._cache.get(key)
         if cached is not None:
@@ -49,14 +51,14 @@ class ActorSpriteCache:
             ("zombie", (210, 92, 84)),
         ):
             for lod, radius in ((RenderLOD.FULL, 18), (RenderLOD.SIMPLE, 14), (RenderLOD.DOT, 4)):
-                for bucket in range(16 if lod == RenderLOD.FULL else 1):
+                for bucket in range(FULL_FACING_BUCKETS if lod == RenderLOD.FULL else 1):
                     self.sprite(
                         actor_type=actor_type,
                         kind="default",
                         lod=lod,
                         radius=radius,
                         color=color,
-                        facing=bucket * math.tau / 16,
+                        facing=bucket * math.tau / FULL_FACING_BUCKETS,
                     )
 
     def _build(
@@ -72,7 +74,7 @@ class ActorSpriteCache:
         size = max(18, radius * 2 + padding * 2)
         surface = pygame.Surface((size, size), pygame.SRCALPHA)
         cx = cy = size // 2
-        facing = facing_bucket * math.tau / 16
+        facing = facing_bucket * math.tau / FULL_FACING_BUCKETS
         if lod == RenderLOD.DOT:
             pygame.draw.circle(surface, (4, 7, 13), (cx, cy), radius + 2)
             pygame.draw.circle(surface, color, (cx, cy), radius)

@@ -23,6 +23,7 @@ def tab_toggle_keys(tab_key: str) -> list[str]:
             "fullscreen",
             "bot_vision",
             "bot_vision_range",
+            "soldier_reaction_radius",
             "ai_reactions",
             "health_bars",
             "noise_radius",

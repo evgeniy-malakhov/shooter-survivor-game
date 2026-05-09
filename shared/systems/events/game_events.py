@@ -62,6 +62,7 @@ class SpawnMineEvent(GameEvent):
 class DamagePlayerEvent(GameEvent):
     player_id: str
     damage: int
+    attacker_id: str | None = None
 
 
 @dataclass(slots=True)

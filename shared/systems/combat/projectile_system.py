@@ -140,6 +140,7 @@ class ProjectileSystem(WorldSystem):
                     DamagePlayerEvent(
                         player_id=player.id,
                         damage=projectile.damage,
+                        attacker_id=projectile.owner_id,
                     )
                 )
                 return True

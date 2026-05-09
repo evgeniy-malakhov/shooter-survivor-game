@@ -88,7 +88,7 @@ class EventApplySystem(WorldSystem):
                 player = state.players.get(event.player_id)
 
                 if player and player.alive:
-                    ctx.damage.damage_player(player, event.damage)
+                    ctx.damage.damage_player(player, event.damage, event.attacker_id)
 
             elif isinstance(event, DamageZombieEvent):
                 zombie = state.zombies.get(event.zombie_id)

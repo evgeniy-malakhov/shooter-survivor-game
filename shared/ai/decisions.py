@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from shared.ai.context import SoundEvent, ZombieContext, ActorTarget
+from shared.ai.memory import memory_pos, most_dangerous_sound
 from shared.constants import ZOMBIE_TARGET_RADIUS, ZOMBIES
 from shared.models import PlayerState, Vec2
 
@@ -183,7 +184,15 @@ class DecisionScorer:
     def _score_sound(self, ctx: ZombieContext) -> ZombieDecision | None:
         sound = ctx.can_hear(ctx.zombie)
         if not sound:
-            return None
+            memory = most_dangerous_sound(ctx.zombie.ai_memory, now=ctx.time, floor=ctx.zombie.floor)
+            pos = memory_pos(memory) if memory else None
+            if not pos or ctx.zombie.mode in {"investigate", "search", "chase"}:
+                return None
+            return ZombieDecision(
+                kind=ZombieDecisionKind.ORIENT_TO_SOUND,
+                score=self.weights.sound_interest + float(memory.get("danger", 0.0)) * 42.0,
+                pos=pos,
+            )
 
         distance = ctx.zombie.pos.distance_to(sound.pos)
 
@@ -196,7 +205,7 @@ class DecisionScorer:
             score += 35.0
 
         if ctx.zombie.mode in {"investigate", "search"}:
-            score -= 22.0
+            score -= 58.0 if ctx.zombie.last_known_pos else 22.0
 
         if ctx.zombie.mode == "orient_to_sound":
             score -= 40.0
@@ -237,6 +246,8 @@ class DecisionScorer:
             return None
 
         score = self.weights.search + zombie.alertness * self.weights.persistence
+        if zombie.mode in {"investigate", "search"}:
+            score += 42.0
 
         return ZombieDecision(
             kind=ZombieDecisionKind.SEARCH_LAST_KNOWN,

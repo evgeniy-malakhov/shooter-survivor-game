@@ -17,6 +17,7 @@ from server.journal import ServerJournal
 from server.persistence import PersistenceWorker
 from server.runtime_metrics import ServerMetrics
 from server.spatial import POSITION_COLLECTIONS, SnapshotInterestIndex, filter_snapshot_area, snapshot_with_local_player
+from server.snapshot_lod import SNAPSHOT_LOD_FEATURE, apply_snapshot_lod
 from server.workers import AsyncLogWorker, ServerProfiler
 from shared.constants import SNAPSHOT_RATE, TICK_RATE
 from shared.net_schema import SNAPSHOT_SCHEMA, compact_delta, compact_snapshot
@@ -432,6 +433,7 @@ class ClientSession:
     input_count_window: int = 0
     command_count_window: int = 0
     bytes_count_window: int = 0
+    client_features: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -739,12 +741,14 @@ class GameServer:
         session_token = secrets.token_urlsafe(32)
         self._player_tokens[player.id] = session_token
         outbox = ClientOutputQueue(self.tuning.network.output_queue_packets)
-        session = ClientSession(player.id, name, session_token, protocol, outbox, last_seen=time.monotonic())
+        client_features = self._client_features(message)
+        session = ClientSession(player.id, name, session_token, protocol, outbox, last_seen=time.monotonic(), client_features=client_features)
         protocol.player_id = player.id
         self.clients[player.id] = session
         session.writer_task = asyncio.create_task(self._writer_loop(session), name=f"writer-{player.id}")
         snapshot_data = self._snapshot_with_network_stats(snapshot.data)
         filtered = self._bootstrap_snapshot(snapshot_data, player.id)
+        filtered = self._snapshot_for_session(session, filtered, snapshot_data, snapshot.tick)
         session.last_snapshot = filtered
         session.last_snapshot_tick = snapshot.tick
         self._remember_snapshot_hash(session, snapshot.tick, filtered, force=True)
@@ -806,12 +810,14 @@ class GameServer:
             last_received_input_seq=ticket.last_input_seq,
             ping_ms=ticket.ping_ms,
             last_seen=time.monotonic(),
+            client_features=self._client_features(message),
         )
         protocol.player_id = player_id
         self.clients[player_id] = session
         self.resume_tickets.pop(player_id, None)
         session.writer_task = asyncio.create_task(self._writer_loop(session), name=f"writer-{player_id}")
         filtered = self._filter_snapshot(snapshot_data, player_id, snapshot.tick)
+        filtered = self._snapshot_for_session(session, filtered, snapshot_data, snapshot.tick)
         session.last_snapshot = filtered
         session.last_snapshot_tick = snapshot.tick
         self._remember_snapshot_hash(session, snapshot.tick, filtered, force=True)
@@ -864,6 +870,35 @@ class GameServer:
             self.reject(protocol, "unsupported snapshot schema")
             return False
         return True
+
+    def _client_features(self, message: dict[str, Any]) -> list[str]:
+        features = message.get("features", [])
+        return [str(feature) for feature in features] if isinstance(features, list) else []
+
+    def _snapshot_for_session(
+        self,
+        session: ClientSession,
+        filtered: dict[str, Any],
+        full_snapshot: dict[str, Any],
+        tick: int,
+        *,
+        bucket: tuple[int, int, int, str] | None = None,
+    ) -> dict[str, Any]:
+        if SNAPSHOT_LOD_FEATURE not in session.client_features:
+            return filtered
+        floor, cell_x, cell_y, _inside = bucket or self._interest_bucket(full_snapshot, session.player_id)
+        center_x = cell_x * self.tuning.network.grid_cell_size + self.tuning.network.grid_cell_size * 0.5
+        center_y = cell_y * self.tuning.network.grid_cell_size + self.tuning.network.grid_cell_size * 0.5
+        interest = self.tuning.network.interest_radius + self.tuning.network.grid_cell_size * 0.75
+        return apply_snapshot_lod(
+            filtered,
+            center_x=center_x,
+            center_y=center_y,
+            floor=floor,
+            near_radius=interest * 0.42,
+            mid_radius=interest * 0.72,
+            far_radius=interest,
+        )
 
     def _handle_input(self, session: ClientSession, message: dict[str, Any]) -> None:
         if not self._allow_message_rate(session, "input"):
@@ -1097,6 +1132,7 @@ class GameServer:
                             self.tuning.network.building_interest_radius + self.tuning.network.grid_cell_size * 0.75,
                         )
                     filtered = snapshot_with_local_player(area_cache[bucket], snapshot_data, session.player_id)
+                    filtered = self._snapshot_for_session(session, filtered, snapshot_data, snapshot.tick, bucket=bucket)
                     self._queue_snapshot(session, filtered, snapshot.tick)
                     visible_events = filter_events_for_snapshot(events, filtered, session.player_id)
                     if visible_events:

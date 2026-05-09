@@ -13,6 +13,7 @@ CLIENT_FEATURES = [
     "resume_session",
     "state_hash",
     "health_probe",
+    "snapshot_lod_v1",
 ]
 SERVER_FEATURES = [
     "commands",
@@ -28,4 +29,5 @@ SERVER_FEATURES = [
     "metrics_http",
     "health_probe",
     "configurable_tuning",
+    "snapshot_lod_v1",
 ]

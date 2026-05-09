@@ -3,6 +3,7 @@ from __future__ import annotations
 import random
 from dataclasses import replace
 
+from shared.ai.memory import remember_sound
 from shared.ai.context import SoundEvent
 from shared.models import SoldierState, Vec2, ZombieState
 from shared.systems.actors.decision.actor_decision_dto import ActorDecisionInput
@@ -22,6 +23,7 @@ class ActorSnapshotBuilder:
         nearby_players = tuple(target for target in targets if target.kind == "player")
         nearby_soldiers = tuple(target for target in targets if target.kind == "soldier")
         nearby_sounds = self._nearby_sounds_for_zombie(zombie, ctx)
+        self._remember_sounds(zombie.ai_memory, nearby_sounds, now=ctx.zombie_runtime.state_time, actor_pos=zombie.pos)
 
         return ActorDecisionInput(
             actor_type="zombie",
@@ -56,7 +58,9 @@ class ActorSnapshotBuilder:
         targets = ctx.soldier_runtime.targets_near_soldier(soldier, ctx)
         nearby_players = tuple(target for target in targets if target.kind == "player")
         nearby_zombies = tuple(target for target in targets if target.kind == "zombie")
+        squad_mates = ctx.squads.mates_for(soldier)
         nearby_sounds = self._nearby_sounds_for_soldier(soldier, ctx)
+        self._remember_sounds(soldier.ai_memory, nearby_sounds, now=ctx.soldier_runtime.state_time, actor_pos=soldier.pos)
 
         return ActorDecisionInput(
             actor_type="soldier",
@@ -69,6 +73,7 @@ class ActorSnapshotBuilder:
             targets=targets,
             nearby_players=nearby_players,
             nearby_zombies=nearby_zombies,
+            nearby_soldiers=squad_mates,
             nearby_sounds=nearby_sounds,
             metadata={
                 "cpu_heavy": bool(targets),
@@ -124,3 +129,15 @@ class ActorSnapshotBuilder:
             replace(sound, pos=Vec2(sound.pos.x, sound.pos.y))
             for sound in ctx.spatial.nearby_sounds(soldier.pos, radius, soldier.floor)
         )
+
+    def _remember_sounds(
+        self,
+        memory: list[dict[str, object]],
+        sounds: tuple[SoundEvent, ...],
+        *,
+        now: float,
+        actor_pos: Vec2,
+    ) -> None:
+        for sound in sounds:
+            if sound.kind in {"shot", "explosion", "grenade", "movement"}:
+                remember_sound(memory, sound, now=now, actor_pos=actor_pos)

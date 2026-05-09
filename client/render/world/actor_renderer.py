@@ -140,6 +140,12 @@ class ActorRenderer:
             if not (-80 <= sx <= ctx.screen.get_width() + 80 and -80 <= sy <= ctx.screen.get_height() + 80):
                 continue
             lod = soldier.lod
+            if lod == RenderLOD.FULL and ctx.settings.get("soldier_reaction_radius"):
+                radius_px = world_size(ctx, spec.hearing_range, 1)
+                ring = pygame.Surface(ctx.screen.get_size(), pygame.SRCALPHA)
+                pygame.draw.circle(ring, (44, 124, 255, 22), (sx, sy), radius_px, 1)
+                pygame.draw.circle(ring, (44, 124, 255, 9), (sx, sy), radius_px)
+                ctx.screen.blit(ring, (0, 0))
             if lod == RenderLOD.DOT:
                 self.paint_actor_dot(ctx, (sx, sy), soldier.color, 4)
                 continue

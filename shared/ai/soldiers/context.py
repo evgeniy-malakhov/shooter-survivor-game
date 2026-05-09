@@ -13,6 +13,7 @@ class SoldierActionResult:
     projectiles: list[dict[str, Any]] = field(default_factory=list)
     grenades: list[dict[str, Any]] = field(default_factory=list)
     sounds: list[dict[str, Any]] = field(default_factory=list)
+    soldier_heals: list[tuple[str, int]] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -31,3 +32,4 @@ class SoldierContext:
     random_guard_pos: Callable[[SoldierState, random.Random], Vec2]
     projectile_life: Callable[[float], float]
     sounds: tuple[SoundEvent, ...] = ()
+    squad_mates: tuple[ActorTarget, ...] = ()

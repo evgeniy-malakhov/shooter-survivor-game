@@ -9,7 +9,7 @@ def interpolate_snapshot(a: dict[str, Any], b: dict[str, Any], alpha: float, loc
     alpha = max(0.0, min(1.0, alpha))
     result = dict(a)
     result["time"] = _lerp(float(a.get("time", 0.0)), float(b.get("time", a.get("time", 0.0))), alpha)
-    for collection in ("players", "zombies", "projectiles", "grenades", "mines", "poison_projectiles", "poison_pools"):
+    for collection in ("players", "zombies", "soldiers", "projectiles", "grenades", "mines", "poison_projectiles", "poison_pools"):
         result[collection] = dict(_collection(a, collection))
         _interpolate_collection(result, a, b, collection, alpha, local_player_id)
     return result

@@ -38,7 +38,7 @@ class DamageService:
         self._zombie_ai_next_at = zombie_ai_next_at
         self._get_time = get_time
 
-    def damage_player(self, player: PlayerState, damage: int) -> None:
+    def damage_player(self, player: PlayerState, damage: int, owner_id: str | None = None) -> None:
         player.healing_left = 0.0
         player.healing_pool = 0.0
         player.healing_rate = 0.0
@@ -70,6 +70,7 @@ class DamageService:
         if player.health <= 0:
             player.health = 0
             player.alive = False
+            self._credit_player_kill(owner_id, "player", victim_id=player.id)
 
     def damage_soldier(self, soldier: SoldierState, damage: int, owner_id: str) -> None:
         if not soldier.alive:
@@ -83,11 +84,13 @@ class DamageService:
         soldier.health -= max(1, damage)
 
         if soldier.health > 0:
+            self._alert_soldier_from_damage(soldier, owner_id)
             return
 
         soldier.health = 0
         soldier.alive = False
         self._soldiers.pop(soldier.id, None)
+        self._credit_player_kill(owner_id, "soldier")
 
     def damage_zombie(
         self,
@@ -139,7 +142,7 @@ class DamageService:
         source_pos: Vec2 | None = None,
         reveal_owner: bool = True,
     ) -> None:
-        owner = self._players.get(owner_id) if reveal_owner else None
+        owner = (self._players.get(owner_id) or self._soldiers.get(owner_id)) if reveal_owner else None
 
         if owner and owner.alive:
             alert_pos = source_pos.copy() if source_pos else owner.pos.copy()
@@ -187,3 +190,25 @@ class DamageService:
         self._zombie_ai_generation.pop(zombie.id, None)
         self._zombie_ai_pending.pop(zombie.id, None)
         self._zombie_ai_next_at.pop(zombie.id, None)
+
+    def _alert_soldier_from_damage(self, soldier: SoldierState, owner_id: str) -> None:
+        attacker = self._players.get(owner_id) or self._zombies.get(owner_id)
+        if not attacker or not getattr(attacker, "alive", True):
+            return
+        soldier.mode = "combat"
+        soldier.target_id = owner_id
+        soldier.target_kind = "player" if owner_id in self._players else "zombie"
+        soldier.last_known_pos = attacker.pos.copy()
+        soldier.alertness = 1.0
+        soldier.waypoint = None
+        soldier.idle_timer = 0.0
+        soldier.facing = soldier.pos.angle_to(attacker.pos)
+
+    def _credit_player_kill(self, owner_id: str | None, kind: str, *, victim_id: str | None = None) -> None:
+        if not owner_id or owner_id == victim_id:
+            return
+        player = self._players.get(owner_id)
+        if not player:
+            return
+        player.score += 1
+        player.kills_by_kind[kind] = player.kills_by_kind.get(kind, 0) + 1

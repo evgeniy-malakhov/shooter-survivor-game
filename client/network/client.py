@@ -17,6 +17,7 @@ from client.network.connection import movement_payload, open_connection, rect_fr
 from client.network.delta_applier import decode_snapshot_payload, snapshot_from_message
 from client.network.heartbeat import heartbeat_loop, send_heartbeat, send_state_hash
 from client.network.interpolator import INTERPOLATION_DELAY_SECONDS, estimated_server_time, interpolated_data
+from client.network.lod_snapshot_decoder import event_payload_metrics
 from client.network.online_metrics import OnlinePerfStats
 from client.network.reader import reader_loop
 from client.network.reconnect import resume_loop
@@ -100,6 +101,13 @@ class OnlineClient:
         self._last_interpolation_ms = 0.0
         self._last_prediction_ms = 0.0
         self._last_prediction_error_px = 0.0
+        self._last_snapshot_bytes = 0
+        self._last_delta_bytes = 0
+        self._last_events_bytes = 0
+        self._last_actors_full = 0
+        self._last_actors_simple = 0
+        self._last_actors_dot = 0
+        self._last_compression_ratio = 1.0
         self.events: deque[dict[str, Any]] = deque(maxlen=256)
         self._pending_commands: dict[int, dict[str, Any]] = {}
         self._command_results: deque[dict[str, Any]] = deque(maxlen=128)
@@ -258,7 +266,11 @@ class OnlineClient:
             abs(float(previous.get(key, 0.0)) - float(command_data.get(key, 0.0))) > 0.001
             for key in ("move_x", "move_y")
         )
-        urgent = movement_changed or any(previous.get(key) != command_data.get(key) for key in ("shooting", "sprint", "sneak"))
+        aim_changed = any(
+            abs(float(previous.get(key, 0.0)) - float(command_data.get(key, 0.0))) > 4.0
+            for key in ("aim_x", "aim_y")
+        )
+        urgent = movement_changed or aim_changed or any(previous.get(key) != command_data.get(key) for key in ("shooting", "sprint", "sneak"))
         if not urgent and elapsed < 1.0 / INPUT_SEND_RATE:
             return False
         if command_data == previous and elapsed < INPUT_FORCE_INTERVAL_SECONDS:
@@ -493,6 +505,8 @@ class OnlineClient:
                 )
                 self._update_perf_locked()
         elif message_type == "events":
+            event_metrics = event_payload_metrics(message)
+            self._last_events_bytes = event_metrics.events_bytes
             with self._snapshot_lock:
                 for event in message.get("events", []):
                     if isinstance(event, dict):
@@ -568,8 +582,14 @@ class OnlineClient:
                 return
 
     def _snapshot_from_message(self, message: dict[str, Any]) -> dict[str, Any] | None:
-        result, decode_ms = snapshot_from_message(self._snapshot_data, message)
+        result, decode_ms, payload_metrics = snapshot_from_message(self._snapshot_data, message)
         self._last_decode_ms = decode_ms
+        self._last_snapshot_bytes = payload_metrics.snapshot_bytes
+        self._last_delta_bytes = payload_metrics.delta_bytes
+        self._last_actors_full = payload_metrics.actors_full
+        self._last_actors_simple = payload_metrics.actors_simple
+        self._last_actors_dot = payload_metrics.actors_dot
+        self._last_compression_ratio = payload_metrics.compression_ratio
         return result
 
     def _decode_snapshot_payload(self, snapshot: dict[str, Any], schema: object) -> dict[str, Any]:
@@ -599,6 +619,13 @@ class OnlineClient:
         self.perf.render_radius = min(self.server_interest_radius, self.server_building_interest_radius)
         self.perf.minimap_radius = max(self.server_interest_radius, 1400.0)
         self.perf.audio_radius = self.server_interest_radius
+        self.perf.snapshot_bytes = self._last_snapshot_bytes
+        self.perf.delta_bytes = self._last_delta_bytes
+        self.perf.events_bytes = self._last_events_bytes
+        self.perf.actors_full = self._last_actors_full
+        self.perf.actors_simple = self._last_actors_simple
+        self.perf.actors_dot = self._last_actors_dot
+        self.perf.compression_ratio = self._last_compression_ratio
 
     def _render_snapshot_data(self, now: float) -> dict[str, Any] | None:
         if not self._snapshot_data:
