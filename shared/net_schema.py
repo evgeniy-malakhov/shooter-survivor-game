@@ -22,6 +22,17 @@ _LOD_COLLECTION_WIRES = {
     "zombies": ("zs", "zd", "zombie"),
     "soldiers": ("sos", "sod", "soldier"),
 }
+_RAW_COLLECTION_TO_WIRE = {
+    "horde_pressure_zones": "hz",
+    "district_simulation": "ds",
+    "battle_escalation": "be",
+    "reinforcement_requests": "rr",
+    "civilians": "cv",
+    "resource_scarcity": "rs",
+    "supply_convoys": "sc",
+    "safe_zones": "sz",
+}
+_WIRE_TO_RAW_COLLECTION = {wire: collection for collection, wire in _RAW_COLLECTION_TO_WIRE.items()}
 
 
 def compact_snapshot(snapshot: dict[str, Any], local_player_id: str | None) -> dict[str, Any]:
@@ -46,6 +57,14 @@ def compact_snapshot(snapshot: dict[str, Any], local_player_id: str | None) -> d
         "pl": [_pack_poison_pool(entity) for entity in _collection(snapshot, "poison_pools").values()],
         "l": [_pack_loot(entity) for entity in _collection(snapshot, "loot").values()],
         "b": _collection(snapshot, "buildings"),
+        "hz": snapshot.get("horde_pressure_zones", {}),
+        "ds": snapshot.get("district_simulation", {}),
+        "be": snapshot.get("battle_escalation", {}),
+        "rr": snapshot.get("reinforcement_requests", {}),
+        "cv": snapshot.get("civilians", {}),
+        "rs": snapshot.get("resource_scarcity", {}),
+        "sc": snapshot.get("supply_convoys", {}),
+        "sz": snapshot.get("safe_zones", {}),
     }
     if isinstance(local_player, dict):
         compact["lp"] = local_player
@@ -84,6 +103,14 @@ def expand_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
         "poison_pools": _unpack_rows(payload.get("pl", []), _unpack_poison_pool),
         "loot": _unpack_rows(payload.get("l", []), _unpack_loot),
         "buildings": _collection(payload, "b"),
+        "horde_pressure_zones": _collection(payload, "hz"),
+        "district_simulation": _collection(payload, "ds"),
+        "battle_escalation": _collection(payload, "be"),
+        "reinforcement_requests": _collection(payload, "rr"),
+        "civilians": _collection(payload, "cv"),
+        "resource_scarcity": _collection(payload, "rs"),
+        "supply_convoys": _collection(payload, "sc"),
+        "safe_zones": _collection(payload, "sz"),
     }
 
 
@@ -147,6 +174,14 @@ def compact_delta(
             compact_patch = {"u": [_pack_entity(collection, entity) for entity in upserts.values()], "r": removals}
         if compact_patch.get("u") or compact_patch.get("f") or compact_patch.get("r"):
             compact[wire_key] = compact_patch
+    for collection, wire_key in _RAW_COLLECTION_TO_WIRE.items():
+        patch = delta.get(collection)
+        if not isinstance(patch, dict):
+            continue
+        upserts = _collection(patch, "u")
+        removals = list(patch.get("r", []))
+        if upserts or removals:
+            compact[wire_key] = {"u": upserts, "r": removals}
     return compact
 
 
@@ -178,6 +213,11 @@ def expand_delta(payload: dict[str, Any]) -> dict[str, Any]:
                 entity = _unpack_entity(collection, row)
                 upserts[entity["id"]] = entity
         delta[collection] = {"u": upserts, "r": list(patch.get("r", []))}
+    for wire_key, collection in _WIRE_TO_RAW_COLLECTION.items():
+        patch = payload.get(wire_key)
+        if not isinstance(patch, dict):
+            continue
+        delta[collection] = {"u": _collection(patch, "u"), "r": list(patch.get("r", []))}
     for wire_key, collection, unpacker in (
         ("zs", "zombies", _unpack_actor_simple_zombie),
         ("zd", "zombies", _unpack_actor_dot_zombie),
@@ -261,6 +301,7 @@ def _pack_player(entity: dict[str, Any]) -> list[Any]:
         int(entity.get("ping_ms", 0)),
         entity.get("connection_quality", "stable"),
         entity.get("faction", "survivors"),
+        entity.get("status_effects", {}),
     ]
 
 
@@ -290,6 +331,7 @@ def _unpack_player(row: list[Any]) -> dict[str, Any]:
         "ping_ms": int(_get(row, 19, 0)),
         "connection_quality": str(_get(row, 20, "stable")),
         "faction": str(_get(row, 21, "survivors")),
+        "status_effects": _get(row, 22, {}),
     }
 
 

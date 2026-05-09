@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Any
 
 from shared.ai.context import ActorTarget, SoundEvent
+from shared.ai.squads import SquadIntent
 from shared.models import SoldierState, Vec2, WeaponSpec
 
 
@@ -33,3 +34,6 @@ class SoldierContext:
     projectile_life: Callable[[float], float]
     sounds: tuple[SoundEvent, ...] = ()
     squad_mates: tuple[ActorTarget, ...] = ()
+    squad_intent: SquadIntent | None = None
+    squad_role: str = ""
+    squad_memory: tuple[dict[str, Any], ...] = ()

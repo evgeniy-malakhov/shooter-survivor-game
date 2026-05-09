@@ -4,6 +4,14 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Deque
 
+from shared.combat_ecosystem import (
+    BattleEscalationState,
+    CivilianState,
+    ReinforcementRequest,
+    ResourceScarcityState,
+    SafeZoneState,
+    SupplyConvoyState,
+)
 from shared.models import (
     BuildingState,
     GrenadeState,
@@ -20,6 +28,8 @@ from shared.models import (
 )
 from shared.ai.context import SoundEvent
 from shared.ai.squads import SquadState
+from shared.ai.zombie_ecology import DistrictSimulationState, HordePressureZone
+from shared.maps.core.map_types import MapZone
 
 
 @dataclass(slots=True)
@@ -33,6 +43,15 @@ class WorldState:
     zombies: dict[str, ZombieState] = field(default_factory=dict)
     soldiers: dict[str, SoldierState] = field(default_factory=dict)
     squads: dict[str, SquadState] = field(default_factory=dict)
+    horde_pressure_zones: dict[str, HordePressureZone] = field(default_factory=dict)
+    district_simulation: dict[str, DistrictSimulationState] = field(default_factory=dict)
+    map_zones: list[MapZone] = field(default_factory=list)
+    battle_escalation: dict[str, BattleEscalationState] = field(default_factory=dict)
+    reinforcement_requests: dict[str, ReinforcementRequest] = field(default_factory=dict)
+    civilians: dict[str, CivilianState] = field(default_factory=dict)
+    resource_scarcity: dict[str, ResourceScarcityState] = field(default_factory=dict)
+    supply_convoys: dict[str, SupplyConvoyState] = field(default_factory=dict)
+    safe_zones: dict[str, SafeZoneState] = field(default_factory=dict)
 
     projectiles: dict[str, ProjectileState] = field(default_factory=dict)
     grenades: dict[str, GrenadeState] = field(default_factory=dict)

@@ -7,6 +7,7 @@ from typing import Callable
 from shared.constants import ARMORS, MAP_HEIGHT, MAP_WIDTH, SEARCH_DURATION
 from shared.difficulty import DifficultyConfig
 from shared.items import ITEMS
+from shared.ai.memory import remember_damage_source
 from shared.models import PlayerState, SoldierState, Vec2, ZombieState
 from shared.rarities import rarity_spec
 
@@ -162,6 +163,15 @@ class DamageService:
             return
 
         alert_pos.clamp_to_map(MAP_WIDTH, MAP_HEIGHT)
+        remember_damage_source(
+            zombie.ai_memory,
+            actor_id=owner_id,
+            actor_kind="player" if owner_id in self._players else "soldier",
+            pos=alert_pos,
+            floor=zombie.floor,
+            now=float(self._get_time()),
+            danger=1.0,
+        )
 
         zombie.last_known_pos = alert_pos
         zombie.waypoint = None
@@ -199,6 +209,15 @@ class DamageService:
         soldier.target_id = owner_id
         soldier.target_kind = "player" if owner_id in self._players else "zombie"
         soldier.last_known_pos = attacker.pos.copy()
+        remember_damage_source(
+            soldier.ai_memory,
+            actor_id=owner_id,
+            actor_kind=soldier.target_kind,
+            pos=attacker.pos,
+            floor=attacker.floor,
+            now=float(self._get_time()),
+            danger=1.15,
+        )
         soldier.alertness = 1.0
         soldier.waypoint = None
         soldier.idle_timer = 0.0

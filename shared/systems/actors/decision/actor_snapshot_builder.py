@@ -23,6 +23,7 @@ class ActorSnapshotBuilder:
         nearby_players = tuple(target for target in targets if target.kind == "player")
         nearby_soldiers = tuple(target for target in targets if target.kind == "soldier")
         nearby_sounds = self._nearby_sounds_for_zombie(zombie, ctx)
+        ecology_interest, horde_target = ctx.horde_director.ecology_for(zombie)
         self._remember_sounds(zombie.ai_memory, nearby_sounds, now=ctx.zombie_runtime.state_time, actor_pos=zombie.pos)
 
         return ActorDecisionInput(
@@ -44,6 +45,8 @@ class ActorSnapshotBuilder:
                     else living_players_count
                 ),
                 "cpu_heavy": bool(targets),
+                "ecology_interest": ecology_interest.to_dict(),
+                "horde_target": horde_target.to_dict() if horde_target else None,
             },
         )
 
@@ -59,6 +62,7 @@ class ActorSnapshotBuilder:
         nearby_players = tuple(target for target in targets if target.kind == "player")
         nearby_zombies = tuple(target for target in targets if target.kind == "zombie")
         squad_mates = ctx.squads.mates_for(soldier)
+        squad_intent = ctx.squads.intent_for(soldier)
         nearby_sounds = self._nearby_sounds_for_soldier(soldier, ctx)
         self._remember_sounds(soldier.ai_memory, nearby_sounds, now=ctx.soldier_runtime.state_time, actor_pos=soldier.pos)
 
@@ -75,6 +79,9 @@ class ActorSnapshotBuilder:
             nearby_zombies=nearby_zombies,
             nearby_soldiers=squad_mates,
             nearby_sounds=nearby_sounds,
+            squad_intent=squad_intent.to_dict() if squad_intent else None,
+            squad_role=ctx.squads.role_for(soldier),
+            squad_memory=ctx.squads.memory_for(soldier),
             metadata={
                 "cpu_heavy": bool(targets),
             },

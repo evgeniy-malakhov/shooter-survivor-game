@@ -3,6 +3,7 @@ from __future__ import annotations
 import random
 
 from shared.ai.context import SoundEvent, ZombieContext
+from shared.ai.zombie_ecology import ZombieInterest
 from shared.constants import ZOMBIES
 from shared.models import PlayerState, Vec2, ZombieState
 from shared.systems.actors.decision.actor_decision_dto import ActorDecisionInput
@@ -62,6 +63,14 @@ class ZombieDecisionPolicy:
             ),
             building_entry_target=ctx.buildings.building_entry_target,
             path_next_point=lambda actor, target: ctx.zombie_runtime.path_next_point(actor, target, ctx),
+            ecology_interest=ZombieInterest.from_dict(
+                decision_input.metadata.get("ecology_interest")
+                if isinstance(decision_input.metadata.get("ecology_interest"), dict)
+                else None
+            ),
+            horde_target=Vec2.from_dict(decision_input.metadata["horde_target"])
+            if isinstance(decision_input.metadata.get("horde_target"), dict)
+            else None,
         )
 
         ai_result = ai.update(zombie_ctx)

@@ -18,6 +18,8 @@ class ZombieDecisionKind(str, Enum):
     CHASE_VISIBLE_TARGET = "chase_visible_target"
     ATTACK = "attack"
     SPECIAL = "special"
+    HORDE_MIGRATE = "horde_migrate"
+    STALK_MEMORY = "stalk_memory"
 
 
 @dataclass(slots=True)
@@ -68,6 +70,10 @@ class DecisionScorer:
         sound = self._score_sound(ctx)
         if sound:
             decisions.append(sound)
+
+        ecology = self._score_ecology(ctx)
+        if ecology:
+            decisions.append(ecology)
 
         search = self._score_search(ctx)
         if search:
@@ -131,6 +137,9 @@ class DecisionScorer:
             if ctx.zombie.target_player_id == target.id:
                 score += ctx.zombie.alertness * self.weights.persistence
 
+            if ctx.ecology_interest.total > 0.1:
+                score += ctx.ecology_interest.horde * 32.0
+
             result.append(
                 ZombieDecision(
                     kind=ZombieDecisionKind.CHASE_VISIBLE_TARGET,
@@ -186,11 +195,11 @@ class DecisionScorer:
         if not sound:
             memory = most_dangerous_sound(ctx.zombie.ai_memory, now=ctx.time, floor=ctx.zombie.floor)
             pos = memory_pos(memory) if memory else None
-            if not pos or ctx.zombie.mode in {"investigate", "search", "chase"}:
+            if not pos or ctx.zombie.mode in {"investigate", "search", "chase", "stalk", "frenzy", "migrate"}:
                 return None
             return ZombieDecision(
                 kind=ZombieDecisionKind.ORIENT_TO_SOUND,
-                score=self.weights.sound_interest + float(memory.get("danger", 0.0)) * 42.0,
+                score=self.weights.sound_interest + float(memory.get("danger", 0.0)) * 42.0 + ctx.ecology_interest.horde * 25.0,
                 pos=pos,
             )
 
@@ -204,7 +213,7 @@ class DecisionScorer:
         if sound.kind == "shot":
             score += 35.0
 
-        if ctx.zombie.mode in {"investigate", "search"}:
+        if ctx.zombie.mode in {"investigate", "search", "stalk", "migrate"}:
             score -= 58.0 if ctx.zombie.last_known_pos else 22.0
 
         if ctx.zombie.mode == "orient_to_sound":
@@ -229,6 +238,35 @@ class DecisionScorer:
             pos=sound.pos.copy(),
         )
 
+    def _score_ecology(self, ctx: ZombieContext) -> ZombieDecision | None:
+        interest = ctx.ecology_interest
+        if not ctx.horde_target or interest.total < 0.18:
+            return None
+
+        zombie = ctx.zombie
+        if zombie.mode == "chase":
+            return None
+
+        if interest.horde >= 0.42 or interest.total >= 0.65:
+            return ZombieDecision(
+                kind=ZombieDecisionKind.HORDE_MIGRATE,
+                score=72.0 + interest.total * 95.0 + zombie.alertness * 22.0,
+                pos=ctx.horde_target.copy(),
+            )
+
+        if zombie.last_known_pos and zombie.mode in {"search", "investigate", "stalk"}:
+            return ZombieDecision(
+                kind=ZombieDecisionKind.STALK_MEMORY,
+                score=60.0 + interest.total * 52.0 + zombie.alertness * 28.0,
+                pos=zombie.last_known_pos.copy(),
+            )
+
+        return ZombieDecision(
+            kind=ZombieDecisionKind.HORDE_MIGRATE,
+            score=46.0 + interest.total * 60.0,
+            pos=ctx.horde_target.copy(),
+        )
+
     def _score_special(
             self,
             ctx: ZombieContext,
@@ -242,12 +280,14 @@ class DecisionScorer:
         if not zombie.last_known_pos:
             return None
 
-        if zombie.mode not in {"investigate", "search", "chase"}:
+        if zombie.mode not in {"investigate", "search", "chase", "stalk", "migrate", "alerted", "frenzy"}:
             return None
 
         score = self.weights.search + zombie.alertness * self.weights.persistence
-        if zombie.mode in {"investigate", "search"}:
+        if zombie.mode in {"investigate", "search", "stalk"}:
             score += 42.0
+        if ctx.ecology_interest.total > 0.1:
+            score += ctx.ecology_interest.total * 38.0
 
         return ZombieDecision(
             kind=ZombieDecisionKind.SEARCH_LAST_KNOWN,

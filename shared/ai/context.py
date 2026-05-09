@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Any
 
 from shared.factions import FACTION_NEUTRAL
+from shared.ai.zombie_ecology import ZombieInterest
 from shared.models import PlayerState, Vec2, ZombieState
 
 
@@ -43,6 +44,8 @@ class ZombieContext:
     pick_search_waypoint: Callable[[ZombieState, Vec2, random.Random], Vec2 | None]
     building_entry_target: Callable[[str], Vec2 | None]
     path_next_point: Callable[[ZombieState, Vec2], Vec2]
+    ecology_interest: ZombieInterest = field(default_factory=ZombieInterest)
+    horde_target: Vec2 | None = None
 
 @dataclass(slots=True)
 class ActorTarget:

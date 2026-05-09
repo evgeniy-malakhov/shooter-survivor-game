@@ -14,6 +14,14 @@ ENTITY_COLLECTIONS = (
     "poison_pools",
     "loot",
     "buildings",
+    "horde_pressure_zones",
+    "district_simulation",
+    "battle_escalation",
+    "reinforcement_requests",
+    "civilians",
+    "resource_scarcity",
+    "supply_convoys",
+    "safe_zones",
 )
 SCALAR_KEYS = ("time", "map_width", "map_height")
 

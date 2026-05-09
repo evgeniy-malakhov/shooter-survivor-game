@@ -19,8 +19,15 @@ from shared.maps.loading.loading_stage import LoadingStage
 from shared.systems.actors.soldier_runtime_service import SoldierRuntimeService
 from shared.systems.actors.soldier_runtime_system import SoldierRuntimeSystem
 from shared.systems.actors.squad_service import SquadService
+from shared.systems.actors.horde_director_service import HordeDirectorService
+from shared.systems.actors.horde_director_system import HordeDirectorSystem
 from shared.systems.actors.zombie_runtime_service import ZombieRuntimeService
 from shared.systems.actors.zombie_runtime_system import ZombieRuntimeSystem
+from shared.systems.ecosystem.civilian_survivor_system import CivilianSurvivorSystem
+from shared.systems.ecosystem.combat_ecosystem_service import CombatEcosystemService
+from shared.systems.ecosystem.combat_ecosystem_system import CombatEcosystemSystem
+from shared.systems.ecosystem.reinforcement_service import ReinforcementService
+from shared.systems.ecosystem.reinforcement_system import ReinforcementSystem
 from shared.systems.actors.decision import (
     ActorDecisionExecutionConfig,
     ActorDecisionExecutor,
@@ -93,6 +100,10 @@ def build_world_composition(
     state.map_width = map_result.width
     state.map_height = map_result.height
     state.buildings = map_result.buildings
+    state.map_zones = list(map_result.zones)
+    for district in (map_result.terrain or {}).get("districts", []):
+        if hasattr(district, "id"):
+            state.district_simulation[district.id] = district
 
     id_generator = IdGenerator()
 
@@ -178,6 +189,18 @@ def build_world_composition(
         rng=rng,
         soldier_ai_registry=SOLDIER_AI_REGISTRY,
     )
+    horde_director_service = HordeDirectorService(
+        state=state,
+        rng=rng,
+    )
+    reinforcement_service = ReinforcementService(
+        state=state,
+        rng=rng,
+    )
+    combat_ecosystem_service = CombatEcosystemService(
+        state=state,
+        rng=rng,
+    )
     squad_service = SquadService(state=state)
 
     zombie_pathfinder = GridPathfinder(cell_size=96)
@@ -259,6 +282,9 @@ def build_world_composition(
         interactions=interaction_service,
         soldier_runtime=soldier_runtime_service,
         zombie_runtime=zombie_runtime_service,
+        horde_director=horde_director_service,
+        combat_ecosystem=combat_ecosystem_service,
+        reinforcements=reinforcement_service,
         squads=squad_service,
         actor_snapshots=actor_snapshot_builder,
         actor_decisions=actor_decision_executor,
@@ -275,6 +301,10 @@ def build_world_composition(
         ZombieSpawnSystem(),
         LootSpawnSystem(),
         SoundSystem(),
+        HordeDirectorSystem(),
+        CombatEcosystemSystem(),
+        ReinforcementSystem(),
+        CivilianSurvivorSystem(),
         ZombieRuntimeSystem(),
         SpatialIndexSystem(),
         SoldierRuntimeSystem(),

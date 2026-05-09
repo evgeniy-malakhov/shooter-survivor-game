@@ -38,6 +38,7 @@ class PlayerUpdateSystem(WorldSystem):
                 continue
 
             self._apply_discrete_input(player, command, ctx)
+            ctx.player_status.update_status_effects(player, dt)
             ctx.player_status.update_healing(player, dt)
 
             player.melee_cooldown = max(0.0, player.melee_cooldown - dt)
@@ -56,7 +57,7 @@ class PlayerUpdateSystem(WorldSystem):
                 else SPRINT_MULTIPLIER
                 if player.sprinting
                 else 1.0
-            )
+            ) * ctx.player_status.speed_multiplier(player)
 
             weapon = player.active_weapon()
             meleeing = command.alt_attack and weapon is None

@@ -287,6 +287,14 @@ class GameWorld:
                 poison_pools=dict(self.poison_pools),
                 loot=dict(self.loot),
                 buildings=dict(self.buildings),
+                horde_pressure_zones=dict(self.state.horde_pressure_zones),
+                district_simulation=dict(self.state.district_simulation),
+                battle_escalation=dict(self.state.battle_escalation),
+                reinforcement_requests=dict(self.state.reinforcement_requests),
+                civilians=dict(self.state.civilians),
+                resource_scarcity=dict(self.state.resource_scarcity),
+                supply_convoys=dict(self.state.supply_convoys),
+                safe_zones=dict(self.state.safe_zones),
             )
 
     def zombie_count(self) -> int:

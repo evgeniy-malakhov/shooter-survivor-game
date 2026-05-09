@@ -20,6 +20,9 @@ class ActorDecisionInput:
     nearby_zombies: tuple[ActorTarget, ...] = ()
     nearby_soldiers: tuple[ActorTarget, ...] = ()
     nearby_sounds: tuple[SoundEvent, ...] = ()
+    squad_intent: dict[str, Any] | None = None
+    squad_role: str = ""
+    squad_memory: tuple[dict[str, Any], ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property

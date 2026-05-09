@@ -344,6 +344,7 @@ class PlayerState:
     poison_left: float = 0.0
     poison_tick: float = 0.0
     poison_damage: int = 0
+    status_effects: dict[str, float] = field(default_factory=dict)
     melee_cooldown: float = 0.0
     notice: str = ""
     notice_timer: float = 0.0
@@ -387,6 +388,7 @@ class PlayerState:
             "poison_left": round(self.poison_left, 3),
             "poison_tick": round(self.poison_tick, 3),
             "poison_damage": self.poison_damage,
+            "status_effects": {key: round(value, 3) for key, value in self.status_effects.items() if value > 0.0},
             "melee_cooldown": round(self.melee_cooldown, 3),
             "notice": self.notice,
             "notice_timer": round(self.notice_timer, 3),
@@ -435,6 +437,7 @@ class PlayerState:
             poison_left=float(data.get("poison_left", 0.0)),
             poison_tick=float(data.get("poison_tick", 0.0)),
             poison_damage=int(data.get("poison_damage", 0)),
+            status_effects={str(key): float(value) for key, value in data.get("status_effects", {}).items()},
             melee_cooldown=float(data.get("melee_cooldown", 0.0)),
             notice=str(data.get("notice", "")),
             notice_timer=float(data.get("notice_timer", 0.0)),
@@ -963,6 +966,14 @@ class WorldSnapshot:
     poison_projectiles: dict[str, PoisonProjectileState] = field(default_factory=dict)
     poison_pools: dict[str, PoisonPoolState] = field(default_factory=dict)
     buildings: dict[str, BuildingState] = field(default_factory=dict)
+    horde_pressure_zones: dict[str, Any] = field(default_factory=dict)
+    district_simulation: dict[str, Any] = field(default_factory=dict)
+    battle_escalation: dict[str, Any] = field(default_factory=dict)
+    reinforcement_requests: dict[str, Any] = field(default_factory=dict)
+    civilians: dict[str, Any] = field(default_factory=dict)
+    resource_scarcity: dict[str, Any] = field(default_factory=dict)
+    supply_convoys: dict[str, Any] = field(default_factory=dict)
+    safe_zones: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -979,6 +990,38 @@ class WorldSnapshot:
             "poison_pools": {key: value.to_dict() for key, value in self.poison_pools.items()},
             "loot": {key: value.to_dict() for key, value in self.loot.items()},
             "buildings": {key: value.to_dict() for key, value in self.buildings.items()},
+            "horde_pressure_zones": {
+                key: value.to_dict() if hasattr(value, "to_dict") else dict(value)
+                for key, value in self.horde_pressure_zones.items()
+            },
+            "district_simulation": {
+                key: value.to_dict() if hasattr(value, "to_dict") else dict(value)
+                for key, value in self.district_simulation.items()
+            },
+            "battle_escalation": {
+                key: value.to_dict() if hasattr(value, "to_dict") else dict(value)
+                for key, value in self.battle_escalation.items()
+            },
+            "reinforcement_requests": {
+                key: value.to_dict() if hasattr(value, "to_dict") else dict(value)
+                for key, value in self.reinforcement_requests.items()
+            },
+            "civilians": {
+                key: value.to_dict() if hasattr(value, "to_dict") else dict(value)
+                for key, value in self.civilians.items()
+            },
+            "resource_scarcity": {
+                key: value.to_dict() if hasattr(value, "to_dict") else dict(value)
+                for key, value in self.resource_scarcity.items()
+            },
+            "supply_convoys": {
+                key: value.to_dict() if hasattr(value, "to_dict") else dict(value)
+                for key, value in self.supply_convoys.items()
+            },
+            "safe_zones": {
+                key: value.to_dict() if hasattr(value, "to_dict") else dict(value)
+                for key, value in self.safe_zones.items()
+            },
         }
 
     @classmethod
@@ -1003,4 +1046,12 @@ class WorldSnapshot:
             poison_pools={key: PoisonPoolState.from_dict(value) for key, value in data.get("poison_pools", {}).items()},
             loot={key: LootState.from_dict(value) for key, value in data.get("loot", {}).items()},
             buildings={key: BuildingState.from_dict(value) for key, value in data.get("buildings", {}).items()},
+            horde_pressure_zones={key: dict(value) for key, value in data.get("horde_pressure_zones", {}).items()},
+            district_simulation={key: dict(value) for key, value in data.get("district_simulation", {}).items()},
+            battle_escalation={key: dict(value) for key, value in data.get("battle_escalation", {}).items()},
+            reinforcement_requests={key: dict(value) for key, value in data.get("reinforcement_requests", {}).items()},
+            civilians={key: dict(value) for key, value in data.get("civilians", {}).items()},
+            resource_scarcity={key: dict(value) for key, value in data.get("resource_scarcity", {}).items()},
+            supply_convoys={key: dict(value) for key, value in data.get("supply_convoys", {}).items()},
+            safe_zones={key: dict(value) for key, value in data.get("safe_zones", {}).items()},
         )

@@ -30,7 +30,10 @@ from shared.systems.inventory.inventory_service import InventoryService
 from shared.systems.interactions.interaction_service import InteractionService
 from shared.systems.actors.soldier_runtime_service import SoldierRuntimeService
 from shared.systems.actors.zombie_runtime_service import ZombieRuntimeService
+from shared.systems.actors.horde_director_service import HordeDirectorService
 from shared.systems.actors.squad_service import SquadService
+from shared.systems.ecosystem.combat_ecosystem_service import CombatEcosystemService
+from shared.systems.ecosystem.reinforcement_service import ReinforcementService
 from shared.systems.players.player_status_service import PlayerStatusService
 from shared.systems.spatial.spatial_index_service import SpatialIndexService
 
@@ -76,6 +79,9 @@ class WorldContext:
     interactions: InteractionService
     soldier_runtime: SoldierRuntimeService
     zombie_runtime: ZombieRuntimeService
+    horde_director: HordeDirectorService
+    combat_ecosystem: CombatEcosystemService
+    reinforcements: ReinforcementService
     squads: SquadService
     actor_snapshots: ActorSnapshotBuilder
     actor_decisions: ActorDecisionExecutor

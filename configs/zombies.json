@@ -54,5 +54,19 @@
     "fov_degrees": 124.0,
     "sensitivity": 1.05,
     "suspicion_time": 1.0
+  },
+  "coordinator": {
+    "title": "Coordinator",
+    "health": 92,
+    "armor": 18,
+    "speed": 118.0,
+    "damage": 7,
+    "radius": 22.0,
+    "color": [212, 116, 255],
+    "sight_range": 700.0,
+    "hearing_range": 820.0,
+    "fov_degrees": 150.0,
+    "sensitivity": 1.4,
+    "suspicion_time": 0.65
   }
 }

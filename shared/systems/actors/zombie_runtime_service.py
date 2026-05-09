@@ -406,6 +406,8 @@ class ZombieRuntimeService:
                 target,
                 ctx,
             ),
+            ecology_interest=ctx.horde_director.ecology_for(zombie)[0],
+            horde_target=ctx.horde_director.ecology_for(zombie)[1],
         )
 
     def find_player(

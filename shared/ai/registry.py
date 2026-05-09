@@ -7,10 +7,12 @@ from shared.ai.zombies.leaper import LeaperZombieAI
 from shared.ai.zombies.walker import WalkerZombieAI
 from shared.ai.zombies.runner import RunnerZombieAI
 from shared.ai.zombies.brute import BruteZombieAI
+from shared.ai.zombies.coordinator import CoordinatorZombieAI
 
 ZOMBIE_AI_REGISTRY: dict[str, ZombieAI] = {
     "walker": cast(ZombieAI, WalkerZombieAI()),
     "runner": cast(ZombieAI, RunnerZombieAI()),
     "brute": cast(ZombieAI, BruteZombieAI()),
     "leaper": cast(ZombieAI, LeaperZombieAI()),
+    "coordinator": cast(ZombieAI, CoordinatorZombieAI()),
 }

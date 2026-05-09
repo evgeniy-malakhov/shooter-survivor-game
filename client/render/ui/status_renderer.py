@@ -17,6 +17,8 @@ class StatusRenderer:
     def render(self, ctx: RenderContext, *, connection_quality: str = "stable-connection", error: str = "") -> None:
         if ctx.snapshot and ctx.settings.get("show_zombie_count", False):
             self.paint_zombie_counter(ctx)
+        if ctx.snapshot:
+            self.paint_threat_level(ctx)
         if ctx.online_player_id:
             self.paint_connection_status(ctx, connection_quality)
             self.paint_network_notice(ctx, connection_quality, error)
@@ -36,6 +38,67 @@ class StatusRenderer:
             pygame.draw.circle(ctx.screen, palette.RED, icon_rect.center, 10)
         draw_text_fit(ctx, ctx.text.tr("hud.zombies"), pygame.Rect(rect.x + 44, rect.y + 7, rect.w - 96, 15), palette.MUTED, ctx.fonts.small)
         draw_text_fit(ctx, str(len(ctx.snapshot.zombies)), pygame.Rect(rect.right - 58, rect.y + 5, 42, 30), palette.RED, ctx.fonts.mid, center=True)
+
+    def paint_threat_level(self, ctx: RenderContext) -> None:
+        if not ctx.snapshot or not ctx.fonts or not ctx.local_player:
+            return
+        threat = 0.0
+        player = ctx.local_player
+        for zone in getattr(ctx.snapshot, "horde_pressure_zones", {}).values():
+            if not isinstance(zone, dict):
+                zone = zone.to_dict()
+            if int(zone.get("floor", 0)) != player.floor:
+                continue
+            center_raw = zone.get("center")
+            if not isinstance(center_raw, dict):
+                continue
+            dx = float(center_raw.get("x", 0.0)) - player.pos.x
+            dy = float(center_raw.get("y", 0.0)) - player.pos.y
+            distance = math.hypot(dx, dy)
+            radius = max(1.0, float(zone.get("radius", 900.0)) * 1.8)
+            local = float(zone.get("pressure", 0.0)) * max(0.0, 1.0 - distance / radius)
+            threat = max(threat, local)
+        minimap = self.minimap.rect(ctx)
+        rect = pygame.Rect(minimap.x, minimap.bottom + 60, minimap.w, 50)
+        color = palette.GREEN if threat < 0.3 else palette.YELLOW if threat < 0.65 else palette.RED
+        surface = pygame.Surface(rect.size, pygame.SRCALPHA)
+        pygame.draw.rect(surface, (12, 16, 26, 216), surface.get_rect(), border_radius=8)
+        pygame.draw.rect(surface, (*color, 170), surface.get_rect(), 1, border_radius=8)
+        fill = pygame.Rect(8, rect.h - 10, max(4, int((rect.w - 16) * max(0.0, min(1.0, threat)))), 4)
+        pygame.draw.rect(surface, (*color, 160), fill, border_radius=2)
+        ctx.screen.blit(surface, rect)
+        threat_text = ctx.text.tr("hud.threat", value=int(threat * 100)) if ctx.text else f"Threat {int(threat * 100):02d}%"
+        draw_text_fit(ctx, threat_text, pygame.Rect(rect.x + 10, rect.y + 6, rect.w - 20, 14), color, ctx.fonts.small, center=True)
+        radio_key = "hud.radio.clear" if threat < 0.3 else "hud.radio.movement" if threat < 0.65 else "hud.radio.horde"
+        radio = ctx.text.tr(radio_key) if ctx.text else radio_key
+        squad = sum(1 for soldier in ctx.snapshot.soldiers.values() if soldier.floor == player.floor)
+        escalation = self._local_escalation(ctx)
+        suffix = f"  {escalation}" if escalation else ""
+        squad_text = ctx.text.tr("hud.squad_count", count=squad) if ctx.text else f"Squad {squad}"
+        draw_text_fit(ctx, f"{radio}  {squad_text}{suffix}", pygame.Rect(rect.x + 10, rect.y + 23, rect.w - 20, 13), palette.MUTED, ctx.fonts.small, center=True)
+
+    def _local_escalation(self, ctx: RenderContext) -> str:
+        if not ctx.snapshot:
+            return ""
+        best = None
+        best_score = -1.0
+        for state in getattr(ctx.snapshot, "battle_escalation", {}).values():
+            data = state if isinstance(state, dict) else state.to_dict()
+            score = float(data.get("score", 0.0))
+            if score > best_score:
+                best = data
+                best_score = score
+        if not best:
+            return ""
+        level_raw = str(best.get("level", "calm"))
+        owner_raw = str(best.get("territory_owner", "neutral"))
+        if ctx.text:
+            level = ctx.text.tr(f"ecosystem.level.{level_raw}")
+            owner = ctx.text.tr(f"ecosystem.owner.{owner_raw}")
+        else:
+            level = level_raw.upper()
+            owner = owner_raw
+        return f"{level}/{owner}"
 
     def paint_connection_status(self, ctx: RenderContext, quality: str) -> None:
         if quality == "stable-connection":

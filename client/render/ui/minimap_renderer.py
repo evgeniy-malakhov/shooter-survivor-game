@@ -68,6 +68,24 @@ class MinimapRenderer:
             return min_x <= pos.x <= max_x and min_y <= pos.y <= max_y
 
         player = ctx.local_player
+        for zone in getattr(snapshot, "horde_pressure_zones", {}).values():
+            if not isinstance(zone, dict):
+                zone = zone.to_dict()
+            if player and int(zone.get("floor", 0)) != player.floor:
+                continue
+            raw_center = zone.get("center")
+            if not isinstance(raw_center, dict):
+                continue
+            center = Vec2.from_dict(raw_center)
+            if not inside(center):
+                continue
+            pressure = max(0.0, min(1.0, float(zone.get("pressure", 0.0))))
+            radius = int(max(8, float(zone.get("radius", 700.0)) / span_x * rect.w))
+            marker = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
+            pygame.draw.circle(marker, (255, 56, 76, int(28 + pressure * 76)), (radius, radius), radius)
+            pygame.draw.circle(marker, (255, 96, 112, int(80 + pressure * 110)), (radius, radius), radius, 1)
+            pos = mp(center)
+            ctx.screen.blit(marker, (pos[0] - radius, pos[1] - radius))
         for item in snapshot.loot.values():
             if player and item.floor != player.floor or not inside(item.pos):
                 continue
@@ -85,6 +103,56 @@ class MinimapRenderer:
                 continue
             pygame.draw.circle(ctx.screen, (44, 124, 255), mp(soldier.pos), 4)
             pygame.draw.circle(ctx.screen, (190, 225, 255), mp(soldier.pos), 4, 1)
+        for civilian in getattr(snapshot, "civilians", {}).values():
+            data = civilian if isinstance(civilian, dict) else civilian.to_dict()
+            if player and int(data.get("floor", 0)) != player.floor:
+                continue
+            raw_pos = data.get("pos")
+            if not isinstance(raw_pos, dict):
+                continue
+            pos = Vec2.from_dict(raw_pos)
+            if inside(pos):
+                color = (255, 214, 110) if float(data.get("panic", 0.0)) > 0.6 else (180, 224, 170)
+                pygame.draw.circle(ctx.screen, color, mp(pos), 3)
+        for safe_zone in getattr(snapshot, "safe_zones", {}).values():
+            data = safe_zone if isinstance(safe_zone, dict) else safe_zone.to_dict()
+            if player and int(data.get("floor", 0)) != player.floor:
+                continue
+            raw_pos = data.get("pos")
+            if not isinstance(raw_pos, dict):
+                continue
+            pos = Vec2.from_dict(raw_pos)
+            if not inside(pos):
+                continue
+            status = str(data.get("status", "inactive"))
+            active = status == "active"
+            color = (76, 235, 154) if active else (120, 190, 210)
+            radius = max(5, int(float(data.get("radius", 420.0)) / span_x * rect.w))
+            marker = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
+            pygame.draw.circle(marker, (*color, 38 if active else 24), (radius, radius), radius)
+            pygame.draw.circle(marker, (*color, 180 if active else 110), (radius, radius), radius, 1)
+            center = mp(pos)
+            ctx.screen.blit(marker, (center[0] - radius, center[1] - radius))
+            pygame.draw.rect(ctx.screen, color, pygame.Rect(center[0] - 3, center[1] - 3, 6, 6), border_radius=2)
+        for convoy in getattr(snapshot, "supply_convoys", {}).values():
+            data = convoy if isinstance(convoy, dict) else convoy.to_dict()
+            if str(data.get("status", "en_route")) != "en_route":
+                continue
+            if player and int(data.get("floor", 0)) != player.floor:
+                continue
+            raw_pos = data.get("pos")
+            raw_target = data.get("target_pos")
+            if not isinstance(raw_pos, dict):
+                continue
+            pos = Vec2.from_dict(raw_pos)
+            if not inside(pos):
+                continue
+            point = mp(pos)
+            pygame.draw.circle(ctx.screen, (106, 180, 255), point, 3)
+            if isinstance(raw_target, dict):
+                target = Vec2.from_dict(raw_target)
+                if inside(target):
+                    pygame.draw.line(ctx.screen, (106, 180, 255, 120), point, mp(target), 1)
         for other in snapshot.players.values():
             if player and other.floor != player.floor:
                 continue

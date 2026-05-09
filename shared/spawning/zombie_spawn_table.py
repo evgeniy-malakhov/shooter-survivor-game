@@ -55,5 +55,6 @@ DEFAULT_ZOMBIE_SPAWN_TABLE = ZombieSpawnTable(
         ZombieSpawnRule("runner", weight=0.24, min_time=20.0, max_count_ratio=0.45),
         ZombieSpawnRule("brute", weight=0.12, min_time=45.0, max_count_ratio=0.25),
         ZombieSpawnRule("leaper", weight=0.12, min_time=70.0, max_count_ratio=0.20),
+        ZombieSpawnRule("coordinator", weight=0.03, min_time=55.0, max_count_ratio=0.08),
     )
 )

@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 
 from shared.ai.context import ActorTarget
+from shared.ai.cover import choose_cover_position
 from shared.ai.soldiers.context import SoldierActionResult, SoldierContext
 from shared.ai.soldiers.decisions import SoldierDecision, SoldierDecisionKind, SoldierDecisionScorer
 from shared.constants import MAP_HEIGHT, MAP_WIDTH, SHOT_NOISE
@@ -78,6 +79,23 @@ class BaseSoldierAI:
             soldier.target_kind = decision.target.kind
             soldier.last_known_pos = decision.target.pos.copy()
             self._combat(ctx, decision.target, result)
+            return
+
+        if decision.kind == SoldierDecisionKind.SQUAD_MOVE and decision.pos:
+            soldier.mode = "squad"
+            soldier.last_known_pos = decision.pos.copy()
+            if soldier.pos.distance_to(decision.pos) > 54:
+                soldier.sprinting = True
+                ctx.move_toward(soldier, decision.pos, ctx.dt, ctx.rng)
+            else:
+                soldier.sprinting = False
+            return
+
+        if decision.kind == SoldierDecisionKind.HOLD_POSITION:
+            soldier.mode = "hold"
+            soldier.sprinting = False
+            if decision.pos and soldier.pos.distance_to(decision.pos) > 72:
+                ctx.move_toward(soldier, decision.pos, ctx.dt * 0.65, ctx.rng)
             return
 
         if decision.kind in {SoldierDecisionKind.INVESTIGATE, SoldierDecisionKind.INVESTIGATE_SOUND} and decision.pos:
@@ -250,18 +268,20 @@ class BaseSoldierAI:
 
         direction = away.normalized()
 
-        retreat_target = Vec2(
-            soldier.pos.x + direction.x * 260.0,
-            soldier.pos.y + direction.y * 260.0,
-        )
-        retreat_target.clamp_to_map(MAP_WIDTH, MAP_HEIGHT)
-
         soldier.facing = soldier.pos.angle_to(target.pos)
 
-        step_target = Vec2(
-            soldier.pos.x + direction.x * 180.0,
-            soldier.pos.y + direction.y * 180.0,
+        step_target = choose_cover_position(
+            origin=soldier.pos,
+            threat=target.pos,
+            floor=soldier.floor,
+            line_blocked=ctx.line_blocked,
+            rng=ctx.rng,
         )
+        if step_target is None:
+            step_target = Vec2(
+                soldier.pos.x + direction.x * 180.0,
+                soldier.pos.y + direction.y * 180.0,
+            )
         step_target.clamp_to_map(MAP_WIDTH, MAP_HEIGHT)
 
         ctx.move_toward(soldier, step_target, ctx.dt * 0.62, ctx.rng)

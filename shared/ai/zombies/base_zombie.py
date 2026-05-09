@@ -50,15 +50,29 @@ class BaseZombieAI:
             self._react_to_sound_decision(ctx, decision)
             return
 
+        if decision.kind == ZombieDecisionKind.HORDE_MIGRATE and decision.pos:
+            zombie.mode = "frenzy" if ctx.ecology_interest.total >= 0.78 else "migrate"
+            zombie.last_known_pos = decision.pos.copy()
+            zombie.alertness = min(1.0, zombie.alertness + 0.18 + ctx.ecology_interest.total * 0.18)
+            self._move_to(ctx, decision.pos, sprint=ctx.ecology_interest.total >= 0.55)
+            return
+
+        if decision.kind == ZombieDecisionKind.STALK_MEMORY and decision.pos:
+            zombie.mode = "stalk"
+            zombie.last_known_pos = decision.pos.copy()
+            zombie.alertness = min(1.0, zombie.alertness + 0.08)
+            self._move_to(ctx, decision.pos, sprint=False)
+            return
+
         if zombie.mode == "orient_to_sound":
             self._update_orient_to_sound(ctx)
             return
 
-        if zombie.mode == "investigate":
+        if zombie.mode in {"investigate", "alerted"}:
             self._update_investigate(ctx)
             return
 
-        if zombie.mode == "search":
+        if zombie.mode in {"search", "stalk"}:
             self._update_search(ctx)
             return
 
@@ -150,7 +164,7 @@ class BaseZombieAI:
 
         # Если бот уже расследует/ищет источник — не стопорим его заново.
         # Просто обновляем точку интереса.
-        if zombie.mode in {"investigate", "search"}:
+        if zombie.mode in {"investigate", "search", "stalk", "migrate", "alerted"}:
             zombie.mode = "investigate"
             zombie.search_timer = max(zombie.search_timer, 2.2)
             zombie.waypoint = None
@@ -222,6 +236,11 @@ class BaseZombieAI:
         zombie.search_timer -= ctx.dt
 
         if zombie.search_timer <= 0:
+            if ctx.ecology_interest.total >= 0.22 and zombie.last_known_pos:
+                zombie.mode = "stalk"
+                zombie.search_timer = 1.6 + ctx.ecology_interest.total * 3.2
+                zombie.waypoint = None
+                return
             self._enter_patrol(zombie)
             return
 
@@ -283,14 +302,14 @@ class BaseZombieAI:
         self._enter_patrol(zombie)
 
     def _enter_patrol(self, zombie) -> None:
-        zombie.mode = "patrol"
+        zombie.mode = "wander"
         zombie.target_player_id = None
         zombie.last_known_pos = None
         zombie.waypoint = None
         zombie.search_timer = 0.0
         zombie.search_look_timer = 0.0
         zombie.search_gaze_anchor = 0.0
-        zombie.alertness = 0.0
+        zombie.alertness = max(0.0, zombie.alertness * 0.35)
 
     def _resolve_destination(self, ctx: ZombieContext, target: ActorTarget) -> Vec2:
         if target.inside_building:

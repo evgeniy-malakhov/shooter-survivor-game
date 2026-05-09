@@ -4,6 +4,7 @@ import math
 import random
 
 from shared.ai.context import SoundEvent
+from shared.ai.squads import SquadIntent
 from shared.ai.soldiers.context import SoldierContext
 from shared.ai.soldiers.configs.heavy_grenadier import HEAVY_GRENADIER_HEARING
 from shared.ai.soldiers.configs.medic import MEDIC_HEARING
@@ -47,6 +48,9 @@ class SoldierDecisionPolicy:
             weapon=weapon,
             sounds=decision_input.nearby_sounds,
             squad_mates=decision_input.nearby_soldiers,
+            squad_intent=SquadIntent.from_dict(decision_input.squad_intent),
+            squad_role=decision_input.squad_role,
+            squad_memory=decision_input.squad_memory,
             line_blocked=lambda start, end, floor: ctx.geometry.line_blocked(start, end, floor),
             can_hear=lambda actor: self._can_hear(actor, decision_input, ctx),
             move_toward=lambda actor, target, delta_time, local_rng=None: self._move_toward(

@@ -99,10 +99,11 @@ class SettingsOverlayRenderer:
             row_index += 1
         if tab_has_graphics_quality(app.settings_tab):
             rect = pygame.Rect(option_x, viewport.y + row_index * step_y - app.options_scroll, option_w, 44)
-            label = ctx.text.tr("settings.graphics_quality")
-            if label == "settings.graphics_quality":
-                label = "Graphics quality"
-            self._render_value_row(ctx, rect, label, app.graphics_quality.upper(), palette.PURPLE, viewport)
+            quality_key = f"settings.graphics_quality.{app.graphics_quality}"
+            quality_label = ctx.text.tr(quality_key)
+            if quality_label == quality_key:
+                quality_label = app.graphics_quality.upper()
+            self._render_value_row(ctx, rect, ctx.text.tr("settings.graphics_quality"), quality_label, palette.PURPLE, viewport)
             row_index += 1
         if tab_has_language(app.settings_tab):
             rect = pygame.Rect(option_x, viewport.y + row_index * step_y - app.options_scroll, option_w, 44)

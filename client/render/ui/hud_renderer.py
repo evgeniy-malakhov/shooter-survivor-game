@@ -18,6 +18,7 @@ from client.render.world.render_utils import (
     draw_text_fit,
 )
 from shared.constants import SLOTS
+from shared.status_effects import STATUS_EFFECTS
 
 
 class HudRenderer:
@@ -108,6 +109,16 @@ class HudRenderer:
         effects: list[tuple[str, str, tuple[int, int, int], float]] = []
         if player.poison_left > 0.0:
             effects.append(("poisoned", ctx.text.tr("hud.poisoned"), (95, 220, 122), player.poison_left))
+        for key, left in getattr(player, "status_effects", {}).items():
+            if left <= 0.0:
+                continue
+            spec = STATUS_EFFECTS.get(key)
+            if not spec:
+                continue
+            color = (116, 230, 160) if spec.buff else (255, 120, 104)
+            effects.append((key, spec.title, color, float(left)))
+            if len(effects) >= 5:
+                break
         if not effects:
             return
         width = max(180, len(effects) * 76 + 24)

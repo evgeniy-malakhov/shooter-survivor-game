@@ -10,6 +10,7 @@ from shared.ai.soldiers.types.rifleman import RiflemanSoldierAI
 
 SOLDIER_AI_REGISTRY: dict[str, BaseSoldierAI] = {
     "rifleman": cast(BaseSoldierAI, RiflemanSoldierAI()),
+    "heavy": cast(BaseSoldierAI, RiflemanSoldierAI()),
     "heavy_grenadier": cast(BaseSoldierAI, HeavyGrenadierSoldierAI()),
     "medic": cast(BaseSoldierAI, MedicSoldierAI()),
 }
