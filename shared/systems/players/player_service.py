@@ -1,4 +1,5 @@
 from shared.constants import WEAPONS, MAP_WIDTH, MAP_HEIGHT
+from shared.factions import normalize_faction
 from shared.models import WeaponRuntime, Vec2, PlayerState
 
 
@@ -18,13 +19,14 @@ class PlayerService:
         self._ids = ids
         self._inventory = inventory
 
-    def create_player(self, name: str, player_id: str | None = None):
+    def create_player(self, name: str, player_id: str | None = None, faction: str | None = None):
         player_id = player_id or self._ids.next("p")
 
         player = PlayerState(
             id=player_id,
             name=name,
             pos=self._random_spawn_pos(),
+            faction=normalize_faction(faction, "survivors"),
             kills_by_kind={},
             backpack=[None] * self._backpack_config.slots,
         )

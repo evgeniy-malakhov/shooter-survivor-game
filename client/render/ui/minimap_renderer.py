@@ -153,6 +153,33 @@ class MinimapRenderer:
                 target = Vec2.from_dict(raw_target)
                 if inside(target):
                     pygame.draw.line(ctx.screen, (106, 180, 255, 120), point, mp(target), 1)
+        for mission in getattr(snapshot, "missions", {}).values():
+            data = mission if isinstance(mission, dict) else mission.to_dict()
+            if str(data.get("status", "available")) not in {"available", "active"}:
+                continue
+            if player and int(data.get("floor", 0)) != player.floor:
+                continue
+            raw_pos = data.get("target_pos")
+            if not isinstance(raw_pos, dict):
+                continue
+            pos = Vec2.from_dict(raw_pos)
+            if inside(pos):
+                center = mp(pos)
+                pygame.draw.circle(ctx.screen, (255, 226, 84), center, 5, 1)
+                pygame.draw.circle(ctx.screen, (255, 226, 84), center, 2)
+        for extraction in getattr(snapshot, "extraction_points", {}).values():
+            data = extraction if isinstance(extraction, dict) else extraction.to_dict()
+            if str(data.get("status", "closed")) == "closed":
+                continue
+            if player and int(data.get("floor", 0)) != player.floor:
+                continue
+            raw_pos = data.get("pos")
+            if not isinstance(raw_pos, dict):
+                continue
+            pos = Vec2.from_dict(raw_pos)
+            if inside(pos):
+                color = (255, 112, 96) if str(data.get("status")) == "contested" else (88, 255, 198)
+                self.triangle(ctx, mp(pos), color, -math.pi * 0.5, 7)
         for other in snapshot.players.values():
             if player and other.floor != player.floor:
                 continue

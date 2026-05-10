@@ -22,8 +22,12 @@ ENTITY_COLLECTIONS = (
     "resource_scarcity",
     "supply_convoys",
     "safe_zones",
+    "building_tactics",
+    "missions",
+    "extraction_points",
+    "companion_commands",
 )
-SCALAR_KEYS = ("time", "map_width", "map_height")
+SCALAR_KEYS = ("time", "map_id", "game_mode_id", "map_width", "map_height", "director")
 
 
 def make_snapshot_delta(current: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:

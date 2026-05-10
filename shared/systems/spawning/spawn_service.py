@@ -75,6 +75,7 @@ class SpawnService:
         pos: Vec2,
         guard_point: Vec2 | None = None,
         squad_id: str | None = None,
+        faction: str | None = None,
     ) -> SoldierState:
         soldier = self.soldier_factory.create(
             soldier_id=self._ids.next("s"),
@@ -83,6 +84,7 @@ class SpawnService:
             guard_point=guard_point or pos,
             rng=self._rng,
             squad_id=squad_id,
+            faction=faction or "military",
         )
 
         self._state.soldiers[soldier.id] = soldier

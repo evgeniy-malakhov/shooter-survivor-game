@@ -960,6 +960,8 @@ class WorldSnapshot:
     zombies: dict[str, ZombieState]
     projectiles: dict[str, ProjectileState]
     loot: dict[str, LootState]
+    map_id: str = "forest_outpost"
+    game_mode_id: str = "survival"
     soldiers: dict[str, SoldierState] = field(default_factory=dict)
     grenades: dict[str, GrenadeState] = field(default_factory=dict)
     mines: dict[str, MineState] = field(default_factory=dict)
@@ -974,10 +976,17 @@ class WorldSnapshot:
     resource_scarcity: dict[str, Any] = field(default_factory=dict)
     supply_convoys: dict[str, Any] = field(default_factory=dict)
     safe_zones: dict[str, Any] = field(default_factory=dict)
+    building_tactics: dict[str, Any] = field(default_factory=dict)
+    missions: dict[str, Any] = field(default_factory=dict)
+    extraction_points: dict[str, Any] = field(default_factory=dict)
+    companion_commands: dict[str, Any] = field(default_factory=dict)
+    director: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "time": round(self.time, 3),
+            "map_id": self.map_id,
+            "game_mode_id": self.game_mode_id,
             "map_width": self.map_width,
             "map_height": self.map_height,
             "players": {key: value.to_dict() for key, value in self.players.items()},
@@ -1022,12 +1031,31 @@ class WorldSnapshot:
                 key: value.to_dict() if hasattr(value, "to_dict") else dict(value)
                 for key, value in self.safe_zones.items()
             },
+            "building_tactics": {
+                key: value.to_dict() if hasattr(value, "to_dict") else dict(value)
+                for key, value in self.building_tactics.items()
+            },
+            "missions": {
+                key: value.to_dict() if hasattr(value, "to_dict") else dict(value)
+                for key, value in self.missions.items()
+            },
+            "extraction_points": {
+                key: value.to_dict() if hasattr(value, "to_dict") else dict(value)
+                for key, value in self.extraction_points.items()
+            },
+            "companion_commands": {
+                key: value.to_dict() if hasattr(value, "to_dict") else dict(value)
+                for key, value in self.companion_commands.items()
+            },
+            "director": self.director.to_dict() if hasattr(self.director, "to_dict") else dict(self.director),
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "WorldSnapshot":
         return cls(
             time=float(data.get("time", 0.0)),
+            map_id=str(data.get("map_id", "forest_outpost")),
+            game_mode_id=str(data.get("game_mode_id", "survival")),
             map_width=int(data.get("map_width", 1)),
             map_height=int(data.get("map_height", 1)),
             players={key: PlayerState.from_dict(value) for key, value in data.get("players", {}).items()},
@@ -1054,4 +1082,9 @@ class WorldSnapshot:
             resource_scarcity={key: dict(value) for key, value in data.get("resource_scarcity", {}).items()},
             supply_convoys={key: dict(value) for key, value in data.get("supply_convoys", {}).items()},
             safe_zones={key: dict(value) for key, value in data.get("safe_zones", {}).items()},
+            building_tactics={key: dict(value) for key, value in data.get("building_tactics", {}).items()},
+            missions={key: dict(value) for key, value in data.get("missions", {}).items()},
+            extraction_points={key: dict(value) for key, value in data.get("extraction_points", {}).items()},
+            companion_commands={key: dict(value) for key, value in data.get("companion_commands", {}).items()},
+            director=dict(data.get("director", {})),
         )

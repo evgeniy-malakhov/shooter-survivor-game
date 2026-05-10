@@ -10,6 +10,8 @@ class WorldConfig:
     max_zombies: int | None = None
     difficulty_key: str = "medium"
     map_id: str = "forest_outpost"
+    game_mode_id: str = "survival"
+    player_faction: str = "survivors"
 
     zombie_workers: int | None = None
     zombie_ai_decision_rate: float = 6.0

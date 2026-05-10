@@ -62,6 +62,7 @@ from shared.constants import ARMORS, MAP_HEIGHT, MAP_WIDTH, SLOTS, WEAPONS, ZOMB
 from shared.crafting import craft_rarity_chances
 from shared.difficulty import DIFFICULTY_KEYS, load_difficulty
 from shared.explosives import GRENADE_SPECS, MINE_SPECS, DEFAULT_GRENADE, DEFAULT_MINE
+from shared.game_modes import get_game_mode, list_game_modes
 from shared.items import EQUIPMENT_SLOTS, ITEMS, RECIPES
 from shared.level import tunnel_segments
 from shared.maps import list_available_maps
@@ -302,6 +303,14 @@ class GameApp:
         if self.bot_density not in self.bot_density_profiles:
             self.bot_density = "normal"
         self.single_bots_enabled = bool(saved_settings.get("single_bots_enabled", True))
+        self.single_game_mode_key = str(saved_settings.get("single_game_mode", "survival"))
+        self.single_game_mode_options = tuple(mode.id for mode in list_game_modes())
+        if self.single_game_mode_key not in self.single_game_mode_options:
+            self.single_game_mode_key = "survival"
+        mode_spec = get_game_mode(self.single_game_mode_key)
+        self.single_player_faction = str(saved_settings.get("single_player_faction", mode_spec.default_player_faction))
+        if self.single_player_faction not in mode_spec.player_factions:
+            self.single_player_faction = mode_spec.default_player_faction
         self.single_map_key = str(saved_settings.get("single_map", "city"))
         self.single_map_manifests = list_available_maps()
         self.single_map_options = tuple(manifest.id for manifest in self.single_map_manifests) or MAP_OPTIONS
@@ -416,6 +425,8 @@ class GameApp:
             "single_difficulty": self.difficulty_key,
             "single_bot_density": self.bot_density,
             "single_bots_enabled": self.single_bots_enabled,
+            "single_game_mode": self.single_game_mode_key,
+            "single_player_faction": self.single_player_faction,
             "single_map": self.single_map_key,
             "graphics_quality": self.graphics_quality,
             "gc_pacing_enabled": self.gc_pacing_enabled,
@@ -1156,7 +1167,8 @@ class GameApp:
     ) -> tuple[GameWorld, str]:
         difficulty = load_difficulty(self.difficulty_key)
         density = self.bot_density_profiles[self.bot_density]
-        if self.single_bots_enabled:
+        mode = get_game_mode(self.single_game_mode_key)
+        if self.single_bots_enabled and mode.uses_zombies:
             initial_zombies = max(1, int(round(difficulty.initial_zombies * density)))
             max_zombies = max(initial_zombies, int(round(difficulty.max_zombies * density)))
         else:
@@ -1169,6 +1181,8 @@ class GameApp:
             difficulty_key=self.difficulty_key,
             zombie_workers=0,
             map_id=self.single_map_key,
+            game_mode_id=self.single_game_mode_key,
+            player_faction=self.single_player_faction,
             loading_state=loading_state,
         )
         player = world.add_player(self.player_name, "local")

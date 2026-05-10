@@ -16,6 +16,7 @@ from shared.systems.events.game_events import (
 )
 from shared.world.world_state import WorldState
 from shared.items import ITEMS
+from shared.status_effects import combined_accuracy_multiplier
 if TYPE_CHECKING:
     from shared.world.world_context import WorldContext
 
@@ -50,6 +51,8 @@ class PlayerCombatService:
         spec = WEAPONS[weapon.key]
         pellet_count = max(1, int(spec.pellets))
         spread = ctx.weapons.spread(weapon)
+        accuracy_multiplier = combined_accuracy_multiplier(player.status_effects)
+        spread *= max(0.6, min(2.2, 1.0 / max(0.45, accuracy_multiplier)))
         damage = ctx.weapons.damage(weapon, ctx.difficulty)
         projectile_life = ctx.weapons.projectile_life(spec.projectile_speed)
 

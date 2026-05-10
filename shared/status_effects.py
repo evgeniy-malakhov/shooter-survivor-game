@@ -62,3 +62,17 @@ def combined_reload_multiplier(raw: dict[str, float]) -> float:
     for key in active_status_effects(raw):
         value *= STATUS_EFFECTS[key].reload_multiplier
     return max(0.65, min(1.45, value))
+
+
+def combined_accuracy_multiplier(raw: dict[str, float]) -> float:
+    value = 1.0
+    for key in active_status_effects(raw):
+        value *= STATUS_EFFECTS[key].accuracy_multiplier
+    return max(0.45, min(1.35, value))
+
+
+def combined_aim_multiplier(raw: dict[str, float]) -> float:
+    value = 1.0
+    for key in active_status_effects(raw):
+        value *= STATUS_EFFECTS[key].aim_multiplier
+    return max(0.45, min(1.25, value))

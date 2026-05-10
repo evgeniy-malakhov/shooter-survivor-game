@@ -5,6 +5,7 @@ import math
 from shared.constants import WEAPONS
 from shared.models import PlayerState, WeaponRuntime
 from shared.rarities import rarity_rank, rarity_spec
+from shared.status_effects import combined_reload_multiplier
 from shared.weapon_modules import WEAPON_MODULES
 
 
@@ -32,7 +33,7 @@ class WeaponRuntimeService:
             and weapon.reserve_ammo > 0
             and weapon.ammo_in_mag < self.magazine_size(weapon)
         ):
-            weapon.reload_left = spec.reload_time
+            weapon.reload_left = spec.reload_time * combined_reload_multiplier(player.status_effects)
 
     def finish_reload(self, weapon: WeaponRuntime) -> None:
         needed = self.magazine_size(weapon) - weapon.ammo_in_mag

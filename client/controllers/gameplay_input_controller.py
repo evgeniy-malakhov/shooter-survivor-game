@@ -70,6 +70,11 @@ class GameplayInputController:
             pygame.K_q: ("toggle_utility", {}),
             pygame.K_SPACE: ("respawn", {}),
             pygame.K_g: ("throw_grenade", {}),
+            pygame.K_z: ("squad_command", {"command": "follow"}),
+            pygame.K_x: ("squad_command", {"command": "hold"}),
+            pygame.K_v: ("squad_command", {"command": "regroup"}),
+            pygame.K_h: ("squad_command", {"command": "heal"}),
+            pygame.K_n: ("squad_command", {"command": "silent"}),
         }
         if key in actions:
             action_type, payload = actions[key]

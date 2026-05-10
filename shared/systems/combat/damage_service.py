@@ -10,6 +10,7 @@ from shared.items import ITEMS
 from shared.ai.memory import remember_damage_source
 from shared.models import PlayerState, SoldierState, Vec2, ZombieState
 from shared.rarities import rarity_spec
+from shared.status_effects import StatusEffectKind
 
 
 class DamageService:
@@ -67,6 +68,16 @@ class DamageService:
                 item.durability = max(0.0, item.durability - wear)
 
         player.health -= remaining
+        if remaining >= 12 and self._rng.random() < min(0.42, remaining / 90.0):
+            player.status_effects[StatusEffectKind.BLEEDING.value] = max(
+                player.status_effects.get(StatusEffectKind.BLEEDING.value, 0.0),
+                5.0 + remaining * 0.08,
+            )
+        if remaining >= 18 and self._rng.random() < 0.18:
+            player.status_effects[StatusEffectKind.CONCUSSION.value] = max(
+                player.status_effects.get(StatusEffectKind.CONCUSSION.value, 0.0),
+                3.5,
+            )
 
         if player.health <= 0:
             player.health = 0

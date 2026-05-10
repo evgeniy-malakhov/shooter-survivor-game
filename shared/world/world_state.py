@@ -12,6 +12,13 @@ from shared.combat_ecosystem import (
     SafeZoneState,
     SupplyConvoyState,
 )
+from shared.tactical_gameplay import (
+    BuildingTacticalState,
+    CompanionCommandState,
+    DirectorState,
+    ExtractionPointState,
+    MissionState,
+)
 from shared.models import (
     BuildingState,
     GrenadeState,
@@ -36,6 +43,7 @@ from shared.maps.core.map_types import MapZone
 class WorldState:
     time: float = 0.0
     map_id: str = "forest_outpost"
+    game_mode_id: str = "survival"
     map_width: int = 1
     map_height: int = 1
 
@@ -52,6 +60,11 @@ class WorldState:
     resource_scarcity: dict[str, ResourceScarcityState] = field(default_factory=dict)
     supply_convoys: dict[str, SupplyConvoyState] = field(default_factory=dict)
     safe_zones: dict[str, SafeZoneState] = field(default_factory=dict)
+    building_tactics: dict[str, BuildingTacticalState] = field(default_factory=dict)
+    missions: dict[str, MissionState] = field(default_factory=dict)
+    extraction_points: dict[str, ExtractionPointState] = field(default_factory=dict)
+    companion_commands: dict[str, CompanionCommandState] = field(default_factory=dict)
+    director: DirectorState = field(default_factory=DirectorState)
 
     projectiles: dict[str, ProjectileState] = field(default_factory=dict)
     grenades: dict[str, GrenadeState] = field(default_factory=dict)

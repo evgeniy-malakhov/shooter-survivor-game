@@ -71,6 +71,8 @@ class GameWorld:
         zombie_ai_far_radius: float = 3200.0,
         zombie_ai_batch_size: int = 8,
         map_id: str = "forest_outpost",
+        game_mode_id: str = "survival",
+        player_faction: str = "survivors",
         loading_state: LoadingScreenState | None = None,
         config: WorldConfig | None = None,
     ) -> None:
@@ -81,6 +83,8 @@ class GameWorld:
                 max_zombies=max_zombies,
                 difficulty_key=difficulty_key,
                 map_id=map_id,
+                game_mode_id=game_mode_id,
+                player_faction=player_faction,
                 zombie_workers=zombie_workers,
                 zombie_ai_decision_rate=zombie_ai_decision_rate,
                 zombie_ai_far_decision_rate=zombie_ai_far_decision_rate,
@@ -90,6 +94,8 @@ class GameWorld:
             )
 
         self.state = WorldState()
+        self.state.game_mode_id = config.game_mode_id
+        self._player_faction = config.player_faction
 
         difficulty = load_difficulty(config.difficulty_key)
 
@@ -191,7 +197,7 @@ class GameWorld:
 
     def add_player(self, name: str, player_id: str | None = None) -> PlayerState:
         with self._lock:
-            return self.ctx.player_service.create_player(name, player_id)
+            return self.ctx.player_service.create_player(name, player_id, self._player_faction)
 
     def remove_player(self, player_id: str) -> None:
         with self._lock:
@@ -275,6 +281,8 @@ class GameWorld:
         with self._lock:
             return WorldSnapshot(
                 time=self.time,
+                map_id=self.state.map_id,
+                game_mode_id=self.state.game_mode_id,
                 map_width=self.state.map_width or MAP_WIDTH,
                 map_height=self.state.map_height or MAP_HEIGHT,
                 players=dict(self.players),
@@ -295,6 +303,11 @@ class GameWorld:
                 resource_scarcity=dict(self.state.resource_scarcity),
                 supply_convoys=dict(self.state.supply_convoys),
                 safe_zones=dict(self.state.safe_zones),
+                building_tactics=dict(self.state.building_tactics),
+                missions=dict(self.state.missions),
+                extraction_points=dict(self.state.extraction_points),
+                companion_commands=dict(self.state.companion_commands),
+                director=self.state.director,
             )
 
     def zombie_count(self) -> int:

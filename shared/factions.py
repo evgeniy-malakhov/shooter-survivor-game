@@ -5,6 +5,8 @@ from dataclasses import dataclass
 
 FACTION_SURVIVORS = "survivors"
 FACTION_MILITARY = "military"
+FACTION_ASSAULT_ALPHA = "assault_alpha"
+FACTION_ASSAULT_BRAVO = "assault_bravo"
 FACTION_INFECTED = "infected"
 FACTION_NEUTRAL = "neutral"
 
@@ -26,6 +28,16 @@ FACTIONS: dict[str, FactionSpec] = {
         key=FACTION_MILITARY,
         title="Military",
         hostile_to=frozenset({FACTION_INFECTED, FACTION_SURVIVORS}),
+    ),
+    FACTION_ASSAULT_ALPHA: FactionSpec(
+        key=FACTION_ASSAULT_ALPHA,
+        title="Assault Alpha",
+        hostile_to=frozenset({FACTION_ASSAULT_BRAVO}),
+    ),
+    FACTION_ASSAULT_BRAVO: FactionSpec(
+        key=FACTION_ASSAULT_BRAVO,
+        title="Assault Bravo",
+        hostile_to=frozenset({FACTION_ASSAULT_ALPHA}),
     ),
     FACTION_INFECTED: FactionSpec(
         key=FACTION_INFECTED,

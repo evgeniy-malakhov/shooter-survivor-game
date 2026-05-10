@@ -4,6 +4,7 @@ import math
 import random
 
 from shared.constants import SOLDIERS, WEAPONS
+from shared.factions import FACTION_MILITARY, normalize_faction
 from shared.models import SoldierState, Vec2, WeaponRuntime
 
 
@@ -17,6 +18,7 @@ class SoldierFactory:
         guard_point: Vec2,
         rng: random.Random,
         squad_id: str | None = None,
+        faction: str = FACTION_MILITARY,
     ) -> SoldierState:
         spec = SOLDIERS[kind]
         weapon_spec = WEAPONS[spec.weapon_key]
@@ -36,4 +38,5 @@ class SoldierFactory:
             guard_point=guard_point.copy(),
             weapon=weapon,
             squad_id=squad_id,
+            faction=normalize_faction(faction, FACTION_MILITARY),
         )

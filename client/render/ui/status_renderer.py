@@ -73,7 +73,10 @@ class StatusRenderer:
         radio = ctx.text.tr(radio_key) if ctx.text else radio_key
         squad = sum(1 for soldier in ctx.snapshot.soldiers.values() if soldier.floor == player.floor)
         escalation = self._local_escalation(ctx)
+        tactical = self._tactical_summary(ctx)
         suffix = f"  {escalation}" if escalation else ""
+        if tactical:
+            suffix = f"{suffix}  {tactical}"
         squad_text = ctx.text.tr("hud.squad_count", count=squad) if ctx.text else f"Squad {squad}"
         draw_text_fit(ctx, f"{radio}  {squad_text}{suffix}", pygame.Rect(rect.x + 10, rect.y + 23, rect.w - 20, 13), palette.MUTED, ctx.fonts.small, center=True)
 
@@ -99,6 +102,22 @@ class StatusRenderer:
             level = level_raw.upper()
             owner = owner_raw
         return f"{level}/{owner}"
+
+    def _tactical_summary(self, ctx: RenderContext) -> str:
+        if not ctx.snapshot or not ctx.text:
+            return ""
+        missions = sum(1 for mission in getattr(ctx.snapshot, "missions", {}).values() if str((mission if isinstance(mission, dict) else mission.to_dict()).get("status", "")) in {"available", "active"})
+        extractions = sum(1 for point in getattr(ctx.snapshot, "extraction_points", {}).values() if str((point if isinstance(point, dict) else point.to_dict()).get("status", "closed")) != "closed")
+        director = getattr(ctx.snapshot, "director", {}) or {}
+        pressure = str(director.get("pressure", "")) if isinstance(director, dict) else ""
+        pieces: list[str] = []
+        if missions:
+            pieces.append(ctx.text.tr("hud.missions_count", count=missions))
+        if extractions:
+            pieces.append(ctx.text.tr("hud.extractions_count", count=extractions))
+        if pressure:
+            pieces.append(ctx.text.tr(f"director.pressure.{pressure}"))
+        return " ".join(pieces)
 
     def paint_connection_status(self, ctx: RenderContext, quality: str) -> None:
         if quality == "stable-connection":

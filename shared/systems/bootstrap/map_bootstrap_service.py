@@ -3,6 +3,7 @@ from __future__ import annotations
 import random
 
 from shared.constants import WEAPONS
+from shared.game_modes import GameModeId, get_game_mode
 from shared.items import BASEMENT_LOOT, HOUSE_LOOT
 from shared.models import Vec2
 from shared.systems.events.game_events import SpawnLootEvent
@@ -33,10 +34,13 @@ class MapBootstrapService:
         self._max_zombies = max_zombies
 
     def bootstrap(self) -> None:
-        self._spawn_initial_zombies()
+        mode = get_game_mode(getattr(self._state, "game_mode_id", "survival"))
+        if mode.uses_zombies:
+            self._spawn_initial_zombies()
         self._spawn_initial_world_loot()
         self._spawn_initial_building_loot()
-        self._spawning.spawn_initial_soldiers()
+        if mode.uses_soldiers and mode.id != GameModeId.ASSAULT.value:
+            self._spawning.spawn_initial_soldiers()
 
     def _spawn_initial_zombies(self) -> None:
         start_count = (

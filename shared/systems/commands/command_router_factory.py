@@ -10,6 +10,7 @@ from shared.systems.commands.handlers.reload_handler import ReloadHandler
 from shared.systems.commands.handlers.repair_handler import RepairHandler
 from shared.systems.commands.handlers.respawn_handler import RespawnHandler
 from shared.systems.commands.handlers.select_slot_handler import SelectSlotHandler
+from shared.systems.commands.handlers.squad_command_handler import SquadCommandHandler
 from shared.systems.commands.handlers.throw_grenade_handler import ThrowGrenadeHandler
 from shared.systems.commands.handlers.toggle_utility_handler import ToggleUtilityHandler
 from shared.systems.commands.handlers.use_medkit_handler import UseMedkitHandler
@@ -30,5 +31,6 @@ def build_command_router() -> CommandRouter:
     router.register("craft", CraftHandler())
     router.register("repair", RepairHandler())
     router.register("throw_grenade", ThrowGrenadeHandler())
+    router.register("squad_command", SquadCommandHandler())
 
     return router

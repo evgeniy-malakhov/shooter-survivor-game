@@ -116,7 +116,10 @@ class HudRenderer:
             if not spec:
                 continue
             color = (116, 230, 160) if spec.buff else (255, 120, 104)
-            effects.append((key, spec.title, color, float(left)))
+            title = ctx.text.tr(f"status.{key}")
+            if title == f"status.{key}":
+                title = spec.title
+            effects.append((key, title, color, float(left)))
             if len(effects) >= 5:
                 break
         if not effects:

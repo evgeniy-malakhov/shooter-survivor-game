@@ -31,6 +31,10 @@ _RAW_COLLECTION_TO_WIRE = {
     "resource_scarcity": "rs",
     "supply_convoys": "sc",
     "safe_zones": "sz",
+    "building_tactics": "bt",
+    "missions": "mi",
+    "extraction_points": "ep",
+    "companion_commands": "cc",
 }
 _WIRE_TO_RAW_COLLECTION = {wire: collection for collection, wire in _RAW_COLLECTION_TO_WIRE.items()}
 
@@ -41,6 +45,8 @@ def compact_snapshot(snapshot: dict[str, Any], local_player_id: str | None) -> d
     compact: dict[str, Any] = {
         "v": 1,
         "t": snapshot.get("time", 0.0),
+        "map": snapshot.get("map_id", "forest_outpost"),
+        "gm": snapshot.get("game_mode_id", "survival"),
         "mw": snapshot.get("map_width", 1),
         "mh": snapshot.get("map_height", 1),
         "p": [_pack_player(entity) for entity_id, entity in players.items() if entity_id != local_player_id],
@@ -65,6 +71,11 @@ def compact_snapshot(snapshot: dict[str, Any], local_player_id: str | None) -> d
         "rs": snapshot.get("resource_scarcity", {}),
         "sc": snapshot.get("supply_convoys", {}),
         "sz": snapshot.get("safe_zones", {}),
+        "bt": snapshot.get("building_tactics", {}),
+        "mi": snapshot.get("missions", {}),
+        "ep": snapshot.get("extraction_points", {}),
+        "cc": snapshot.get("companion_commands", {}),
+        "di": snapshot.get("director", {}),
     }
     if isinstance(local_player, dict):
         compact["lp"] = local_player
@@ -83,6 +94,8 @@ def expand_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
         players[player["id"]] = player
     return {
         "time": float(payload.get("t", 0.0)),
+        "map_id": str(payload.get("map", "forest_outpost")),
+        "game_mode_id": str(payload.get("gm", "survival")),
         "map_width": int(payload.get("mw", 1)),
         "map_height": int(payload.get("mh", 1)),
         "players": players,
@@ -111,6 +124,11 @@ def expand_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
         "resource_scarcity": _collection(payload, "rs"),
         "supply_convoys": _collection(payload, "sc"),
         "safe_zones": _collection(payload, "sz"),
+        "building_tactics": _collection(payload, "bt"),
+        "missions": _collection(payload, "mi"),
+        "extraction_points": _collection(payload, "ep"),
+        "companion_commands": _collection(payload, "cc"),
+        "director": _collection(payload, "di"),
     }
 
 
@@ -122,10 +140,16 @@ def compact_delta(
     compact: dict[str, Any] = {"v": 1}
     if "time" in delta:
         compact["t"] = delta["time"]
+    if "map_id" in delta:
+        compact["map"] = delta["map_id"]
+    if "game_mode_id" in delta:
+        compact["gm"] = delta["game_mode_id"]
     if "map_width" in delta:
         compact["mw"] = delta["map_width"]
     if "map_height" in delta:
         compact["mh"] = delta["map_height"]
+    if "director" in delta:
+        compact["di"] = delta["director"]
     for collection, wire_key in _COLLECTION_TO_WIRE.items():
         patch = delta.get(collection)
         if not isinstance(patch, dict):
@@ -191,10 +215,16 @@ def expand_delta(payload: dict[str, Any]) -> dict[str, Any]:
     delta: dict[str, Any] = {}
     if "t" in payload:
         delta["time"] = payload["t"]
+    if "map" in payload:
+        delta["map_id"] = payload["map"]
+    if "gm" in payload:
+        delta["game_mode_id"] = payload["gm"]
     if "mw" in payload:
         delta["map_width"] = payload["mw"]
     if "mh" in payload:
         delta["map_height"] = payload["mh"]
+    if "di" in payload:
+        delta["director"] = payload["di"]
     for wire_key, collection in _WIRE_TO_COLLECTION.items():
         patch = payload.get(wire_key)
         if not isinstance(patch, dict):

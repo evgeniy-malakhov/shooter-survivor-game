@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from shared.systems.base import WorldSystem
+from shared.game_modes import get_game_mode
 from shared.world.world_context import WorldContext
 from shared.world.world_state import WorldState
 
@@ -8,6 +9,8 @@ from shared.world.world_state import WorldState
 class ZombieSpawnSystem(WorldSystem):
     def update(self, state: WorldState, ctx: WorldContext, dt: float) -> None:
         state.spawn_timer -= dt
+        if not get_game_mode(state.game_mode_id).uses_zombies:
+            return
 
         living_players = [
             player

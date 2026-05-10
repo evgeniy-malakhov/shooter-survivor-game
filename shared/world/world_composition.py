@@ -28,6 +28,7 @@ from shared.systems.ecosystem.combat_ecosystem_service import CombatEcosystemSer
 from shared.systems.ecosystem.combat_ecosystem_system import CombatEcosystemSystem
 from shared.systems.ecosystem.reinforcement_service import ReinforcementService
 from shared.systems.ecosystem.reinforcement_system import ReinforcementSystem
+from shared.systems.tactical import TacticalGameplaySystem
 from shared.systems.actors.decision import (
     ActorDecisionExecutionConfig,
     ActorDecisionExecutor,
@@ -48,6 +49,7 @@ from shared.systems.explosives.explosive_system import ExplosiveSystem
 from shared.systems.geometry.building_service import BuildingService
 from shared.systems.geometry.geometry_service import GeometryService
 from shared.systems.geometry.movement_service import MovementService
+from shared.systems.gamemodes import GameModeSystem
 from shared.systems.interactions.interaction_service import InteractionService
 from shared.systems.inventory.inventory_service import InventoryService
 from shared.systems.loot.loot_service import LootService
@@ -93,6 +95,7 @@ def build_world_composition(
     loading_state: LoadingScreenState | None = None,
 ) -> WorldComposition:
     state = WorldState()
+    state.game_mode_id = config.game_mode_id
 
     map_runtime = MapRuntime(DEFAULT_MAP_REGISTRY)
     map_result = map_runtime.start_map(config.map_id, loading_state)
@@ -298,11 +301,13 @@ def build_world_composition(
         ProjectileSystem(),
         ExplosiveSystem(),
         PoisonSystem(),
+        GameModeSystem(),
         ZombieSpawnSystem(),
         LootSpawnSystem(),
         SoundSystem(),
         HordeDirectorSystem(),
         CombatEcosystemSystem(),
+        TacticalGameplaySystem(),
         ReinforcementSystem(),
         CivilianSurvivorSystem(),
         ZombieRuntimeSystem(),

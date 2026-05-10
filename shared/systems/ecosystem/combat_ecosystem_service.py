@@ -266,7 +266,7 @@ class CombatEcosystemService:
                 self._apply_convoy_arrival(convoy)
 
     def _convoy_threat(self, ctx, convoy: SupplyConvoyState) -> float:
-        nearby_zombies = sum(1 for zombie in ctx.spatial.nearby_zombies(convoy.pos, 760.0, convoy.floor) if zombie.alive)
+        nearby_zombies = sum(1 for zombie in ctx.spatial.nearby_zombies(convoy.pos, 760.0, convoy.floor) if zombie.health > 0)
         horde_pressure = 0.0
         for zone in self._state.horde_pressure_zones.values():
             if zone.floor != convoy.floor:
